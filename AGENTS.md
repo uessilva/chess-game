@@ -79,8 +79,15 @@ on `main`. `npm run check` runs the same chain locally.
 
 ## Commands
 
-Not yet scaffolded (Phase 1). Once the Vite + TypeScript + Vitest scaffold
-exists, document dev/test/build commands here and keep this section current.
+Requires Node.js ≥ 20 (run `nvm use` — `.nvmrc` is set; the machine default is old).
+
+- `npm run dev` — Vite dev server
+- `npm run build` — production build
+- `npm test` / `npm run test:watch` — Vitest
+- `npm run test:coverage` — tests with coverage thresholds enforced
+- `npm run typecheck` / `npm run lint` / `npm run format` (`format:check`)
+- `npm run check` — full local gate: typecheck + lint + format check + coverage.
+  Mirrors CI; run it before opening a PR.
 
 ## Working with the Owner
 
