@@ -86,8 +86,8 @@ Requires Node.js ≥ 20 (run `nvm use` — `.nvmrc` is set; the machine default 
 - `npm test` / `npm run test:watch` — Vitest
 - `npm run test:coverage` — tests with coverage thresholds enforced
 - `npm run typecheck` / `npm run lint` / `npm run format` (`format:check`)
-- `npm run check` — full local gate: typecheck + lint + format check + coverage.
-  Mirrors CI; run it before opening a PR.
+- `npm run check` — full local gate: typecheck + lint + format check + module
+  boundaries (`depcruise`) + coverage. Mirrors CI; run it before opening a PR.
 
 ## Working with the Owner
 
