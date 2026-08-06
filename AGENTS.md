@@ -76,6 +76,12 @@ on `main`. `npm run check` runs the same chain locally.
   - **Context** — why the change is needed, briefly
   - **Solution** — what was done, briefly
   - **Testing** — how it was verified (e.g. vitest output, perft results)
+  - **Footer** — every PR ends with a `---` divider followed by an italic
+    `*Generated with <model> for $<cost>.*` line. Read the current session's
+    `model` and `cost` from the OpenCode DB
+    (`~/.local/share/opencode/opencode.db`, table `session` — match the
+    session for this repo by `directory`, pick latest `time_updated`;
+    round cost to 2 decimals).
 
 ## Commands
 
@@ -86,8 +92,8 @@ Requires Node.js ≥ 20 (run `nvm use` — `.nvmrc` is set; the machine default 
 - `npm test` / `npm run test:watch` — Vitest
 - `npm run test:coverage` — tests with coverage thresholds enforced
 - `npm run typecheck` / `npm run lint` / `npm run format` (`format:check`)
-- `npm run check` — full local gate: typecheck + lint + format check + coverage.
-  Mirrors CI; run it before opening a PR.
+- `npm run check` — full local gate: typecheck + lint + format check + module
+  boundaries (`depcruise`) + coverage. Mirrors CI; run it before opening a PR.
 
 ## Working with the Owner
 

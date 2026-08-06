@@ -14,11 +14,14 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:coverage"
+    "check:modules": "depcruise src",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run check:modules && npm run test:coverage"
   },
   "devDependencies": {
+    "@commitlint/cli": "^21.2.1",
     "@eslint/js": "^10.0.1",
     "@vitest/coverage-v8": "^4.1.10",
+    "dependency-cruiser": "^18.1.1",
     "eslint": "^10.8.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.9.6",
