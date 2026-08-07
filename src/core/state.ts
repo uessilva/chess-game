@@ -48,7 +48,10 @@ const BACK_RANK: readonly PieceType[] = [
   'rook',
 ];
 
-/** The standard starting position. (FEN parsing arrives in task 1.4.) */
+/**
+ * The standard starting position. fen.test.ts cross-checks this against
+ * parseFen(START_FEN), so the two stay in agreement.
+ */
 export function initialState(): BoardState {
   const board = emptyBoard();
   for (let file = 0; file < 8; file++) {
