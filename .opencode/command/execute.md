@@ -1,5 +1,5 @@
 ---
-description: Runs the full development loop — pick issues, implement, QA, PM review, open PRs, repeat. Usage: /execute [#N | number-of-issues]
+description: Runs the full development loop — pick issues, implement, open PRs, QA, PM review, orchestrator merges, repeat. Usage: /execute [#N | number-of-issues]
 model: opencode-go/deepseek-v4-flash
 ---
 
@@ -9,15 +9,15 @@ Run the full issue pipeline as defined in `AGENTS.md`.
 
 Arguments (`$ARGUMENTS`):
 
-- `#N` (e.g. `/execute #5`) → **focus on that single issue only**; run it through the full lifecycle (groom → implement → QA → PM accept → PR) and do not pick any other issues this batch.
+- `#N` (e.g. `/execute #5`) → **focus on that single issue only**; run it through the full lifecycle (groom → implement → open PR → QA the PR → PM accept → orchestrator merge) and do not pick any other issues this batch.
 - a number (e.g. `/execute 3`) → batch size (default: 2); pick that many lowest-numbered groomed unblocked issues.
 
-The lifecycle: PM grooms → Engineer builds → Tester verifies → PM accepts → Open PR → Owner merges. See `AGENTS.md` for the roadmap phases, issue numbering (X.Y), quality gates, and PR workflow.
+The lifecycle: PM grooms → Engineer builds + opens PR → Tester verifies the PR → PM accepts → orchestrator merges → next issue. See `AGENTS.md` for the roadmap phases, issue numbering (X.Y), quality gates, and PR workflow.
 
 ## Run Policy
 
 - **Model:** all pipeline subagents use their configured model (opencode-go/kimi-k3); no overrides needed. The agents live in `.opencode/agents/` (product-manager, software-engineer, tester, designer).
-- **Concurrency:** run at most three active subagents by default across grooming, implementation, QA, and PM review. Use fewer when there are fewer independent eligible tracks. Only exceed three when the owner explicitly asks for a larger burst.
+- **Concurrency:** the only parallel step is PM grooming when a batch is requested. Implementation, QA, and PM acceptance run serially — one issue at a time through implement → QA → PM accept → merge → next issue.
 
 ## Step 0: PM Grooming (parallel)
 
@@ -61,114 +61,71 @@ Confirm each pick with `gh issue view {N}` — the body should contain acceptanc
 
 ## Step 1b: Create Todo List
 
-After picking issues, create a todo list with the todowrite tool so the owner can track progress. Per batch:
+After picking issues, create a todo list with the todowrite tool so the owner can track progress. The pipeline is serial — only grooming runs in parallel:
 
-1. "Implement #N (Title)" — one per issue, status: in_progress
+1. "Implement + open PR #N (Title)" — status: in_progress
 2. "QA #N (Title)" — blocked by the implement task
-3. "PM review #N (Title)" — blocked by QA
-4. "Open PRs for batch" — blocked by all PM reviews
-5. "Pick next batch" — blocked by the PR task
+3. "PM review + merge #N (Title)" — blocked by QA
+4. Repeat steps 1-3 for the next issue in the batch (serially)
+5. "Pick next batch" — blocked by all merges
 
 Update task status as work progresses: pending -> in_progress -> completed.
 
-## Step 2: Implement (parallel)
+## Step 2: Implement (serial)
 
-Launch software-engineer subagents in parallel for each picked issue:
-
-```
-Task(subagent_type="software-engineer", prompt="Implement issue #N. Read AGENTS.md first. Read the issue with gh issue view N. Follow the acceptance criteria and test scenarios. Write code and tests (Vitest; perft fixtures for move-generation changes). Run npm run check before reporting. Do NOT commit.")
-```
-
-Wait for all engineers to complete. If an engineer reports a blocker, skip that issue and note it.
-
-## Step 3: QA (parallel)
-
-For each completed implementation, launch a tester subagent:
+Run one issue at a time. Launch the software-engineer subagent for the current issue:
 
 ```
-Task(subagent_type="tester", prompt="QA issue #N. Read AGENTS.md first. The engineer wrote {description}. Review the code and tests, run the focused tests and perft fixtures, then npm run check and npm run build. Report pass/fail with specifics.")
+Task(subagent_type="software-engineer", prompt="Implement issue #N. Read AGENTS.md first. Read the issue with gh issue view N. Follow the acceptance criteria and test scenarios. Write code and tests (Vitest; perft fixtures for move-generation changes). Run npm run check before committing. Commit on a task branch, push, and open the PR with Closes #N in the body. Report the PR number.")
+```
+
+Wait for the engineer to finish. If the engineer reports a blocker, skip that issue, note it, and continue with the next.
+
+## Step 3: QA (serial)
+
+Launch the tester subagent for the current issue's PR:
+
+```
+Task(subagent_type="tester", prompt="QA the PR for issue #N (PR #{pr}). Read AGENTS.md first. gh pr checkout {pr}. Review the code and tests against the issue spec, run the focused tests and perft fixtures, then npm run check and npm run build. Verify every acceptance criterion and confirm gh pr checks {pr} is green. Report pass/fail with specifics.")
 ```
 
 ## Step 4: Handle QA Results
 
-For each issue:
-
 - QA PASSES: proceed to PM review
 - QA FAILS: relay the specific feedback to the engineer, re-implement, re-QA (max 2 retries)
-- QA fails after 2 retries: skip the issue, report it, continue with the others
+- QA fails after 2 retries: skip the issue, report it, continue with the next
 
-## Step 5: PM Acceptance Review (parallel)
+## Step 5: PM Acceptance Review (serial)
 
-For each QA-passed issue, launch the product-manager subagent for acceptance review:
+Launch the product-manager subagent for the current issue's PR:
 
 - Changes under `src/ui/**` → UX review
 - Core/engine/infra changes → DX review
 
 ```
-Task(subagent_type="product-manager", prompt="You are the Product Manager agent doing acceptance review for issue #N. Read AGENTS.md first. Read .opencode/agents/product-manager.md for your review checklist. Review the implementation from the user's (or API consumer's) perspective. Report ACCEPT or REJECT with specifics.")
+Task(subagent_type="product-manager", prompt="You are the Product Manager agent doing acceptance review for issue #N (PR #{pr}). Read AGENTS.md first. Read .opencode/agents/product-manager.md for your review checklist. Review the PR from the user's (or API consumer's) perspective. Report ACCEPT or REJECT with specifics. Do NOT merge — the orchestrator merges accepted PRs.")
 ```
 
 ## Step 6: Handle PM Results
 
-For each issue:
+- PM ACCEPTS: merge the PR yourself (orchestrator), then the issue auto-closes via `Closes #N`. Then move to the next issue in the batch (back to Step 2).
+- PM REJECTS: relay the UX/DX feedback to the engineer, fix on the PR branch, re-run PM review (max 2 retries)
 
-- PM ACCEPTS: proceed to open the PR
-- PM REJECTS: relay the UX/DX feedback to the engineer, fix, re-run PM review (max 2 retries)
+## Step 7: Merge Accepted PRs
 
-Do NOT close issues yourself — the PR body's `Closes #N` closes the issue when the owner merges.
-
-## Step 7: Open PRs (one per accepted issue)
-
-`AGENTS.md` requires one small PR per task. Open them sequentially, using each issue's specific files (never `git add -A`):
+Merging is the orchestrator's job. Confirm the checks are green, then merge:
 
 ```bash
-git checkout -b task/{N}-{short-slug}
-git add {specific files reported by the engineer for issue N}
-git commit -m "{prefix}: {short phrase}"    # feat|fix|docs|chore, header ≤72 chars, no trailing period
-git push -u origin task/{N}-{short-slug}
-gh pr create --title "{Title}" --body "$(cat <<'EOF'
-## Task
-
-Closes #{N}
-
-## Context
-
-{why the change is needed, briefly}
-
-## Solution
-
-{what was done, briefly}
-
-## Testing
-
-{vitest output, perft results, npm run check}
-
----
-
-*Generated with {model} for ${cost}.*
-EOF
-)"
-git checkout main
+gh pr checks {PR}            # must be all green / complete
+gh pr merge {PR} --squash --delete-branch
+gh issue view {N} --json state --jq '.state'   # expect CLOSED (or OPEN if [HUMAN])
 ```
 
-- `{prefix}` matches commitlint: `feat`, `fix`, `docs`, or `chore`.
-- The footer's `{model}` and `{cost}` come from the OpenCode DB (`~/.local/share/opencode/opencode.db`, table `session` — match this repo's session by `directory`, pick latest `time_updated`; round cost to 2 decimals).
-- Issues with `[HUMAN]` criteria: use `Refs #{N}` instead of `Closes #{N}` in the PR body (issue stays open until the owner verifies), and list the human-verification items in the Testing section.
+Never merge or bypass checks — a red/pending required check blocks the merge. `Refs #N` PRs (a `[HUMAN]` issue) merge fine; the issue stays open for the owner.
 
-## Step 8: Check CI
+## Step 8: Repeat
 
-After opening PRs, check the runs:
-
-```bash
-sleep 10
-gh run list --limit 3
-```
-
-If a required check fails, report it to the owner with the failing workflow and job — do not merge or bypass. Fix forward in a follow-up PR.
-
-## Step 9: Repeat
-
-Go back to Step 1 and pick the next batch. Never stop until all open issues are done or no actionable issues remain.
+Once the batch's issues are done, go back to Step 1 and pick the next batch (grooming new issues in parallel). Never stop until all open issues are done or no actionable issues remain.
 
 ## Summary Format
 
@@ -179,8 +136,8 @@ After each batch, report:
 
 | Issue | Type | Engineer | QA | PM | Status |
 |-------|------|----------|----|----|--------|
-| #X Title | Feature | DONE | PASS | ACCEPT | PR #12 |
-| #Y Title | Core | DONE | PASS | ACCEPT | PR #13 |
+| #X Title | Feature | DONE | PASS | ACCEPT | PR #12 → MERGED |
+| #Y Title | Core | DONE | PASS | ACCEPT | PR #13 → MERGED |
 
 Tests: X vitest + perft at depth 4-5, all green; npm run check passes
 Next: picking issues for batch N+1...
