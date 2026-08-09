@@ -4,6 +4,7 @@ import { algebraicOf, squareFromAlgebraic } from './board';
 import { parseFen } from './fen';
 import {
   generateLegalMoves,
+  generatePseudoLegalMoves,
   isCheckmate,
   isInCheck,
   isSquareAttacked,
@@ -12,6 +13,8 @@ import {
 } from './index';
 import { makeMove, unmakeMove } from './move';
 import type { BoardState } from './state';
+import type { Move } from './types';
+import { MoveFlags } from './types';
 
 /** Every legal move as an algebraic `from->to` key with its flags. */
 function moveMap(state: BoardState): Map<string, number> {
@@ -34,6 +37,13 @@ function movesFrom(state: BoardState, from: string): Map<string, number> {
     }
   }
   return out;
+}
+
+/** All legal moves with the given from/to pair (promotion variants collide on from->to keys). */
+function movesTo(state: BoardState, from: string, to: string): Move[] {
+  return generateLegalMoves(state).filter(
+    (m) => algebraicOf(m.from) === from && algebraicOf(m.to) === to,
+  );
 }
 
 /** Assert the exact legal move set of a position. */
@@ -254,6 +264,99 @@ describe('normal play', () => {
   });
 });
 
+describe('castling legality', () => {
+  it('rejects castling out of check', () => {
+    // The e8 rook checks e1 along the e-file; the king may only step to
+    // d1, d2, f2, f1 — never castle away from the check.
+    const state = parseFen('k3r3/8/8/8/8/8/8/4K2R w K - 0 1');
+    expectExactMoves(state, ['e1->d1', 'e1->d2', 'e1->f2', 'e1->f1']);
+  });
+
+  it('rejects kingside castling through an attacked f1', () => {
+    // The a6 bishop attacks f1 along b5-c4-d3-e2; e1 and g1 are safe.
+    // (The issue body says "bishop a6" but pairs it with FEN `.../b7/...`
+    // on rank 5, which would put the bishop on a5 — the FEN below places
+    // it on a6 as described.)
+    const state = parseFen('k7/8/b7/8/8/8/8/4K2R w K - 0 1');
+    expect(isSquareAttacked(state, squareFromAlgebraic('f1'), 'black')).toBe(
+      true,
+    );
+    expect(isSquareAttacked(state, squareFromAlgebraic('e1'), 'black')).toBe(
+      false,
+    );
+    expect(moveMap(state).has('e1->g1')).toBe(false);
+  });
+
+  it('rejects queenside castling through an attacked d1', () => {
+    const state = parseFen('3r3k/8/8/8/8/8/8/R3K3 w Q - 0 1');
+    expect(isSquareAttacked(state, squareFromAlgebraic('d1'), 'black')).toBe(
+      true,
+    );
+    expect(moveMap(state).has('e1->c1')).toBe(false);
+  });
+
+  it('rejects castling onto an attacked destination via the post-make filter', () => {
+    // The g8 rook attacks g1; e1 and f1 are safe, so only the generic
+    // king-safety test can reject the castle.
+    const state = parseFen('k5r1/8/8/8/8/8/8/4K2R w K - 0 1');
+    expect(moveMap(state).has('e1->g1')).toBe(false);
+  });
+
+  it('allows queenside castling when only the rook square b1 is attacked', () => {
+    // The b8 rook attacks b1; the king crosses e1 and d1, never b1.
+    const state = parseFen('1r5k/8/8/8/8/8/8/R3K3 w Q - 0 1');
+    expect(isSquareAttacked(state, squareFromAlgebraic('b1'), 'black')).toBe(
+      true,
+    );
+    expect(moveMap(state).get('e1->c1')).toBe(MoveFlags.CASTLE_QUEEN);
+  });
+
+  it('allows both white castles in the Kiwipete position', () => {
+    const state = parseFen(
+      'r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1',
+    );
+    expect(moveMap(state).get('e1->g1')).toBe(MoveFlags.CASTLE_KING);
+    expect(moveMap(state).get('e1->c1')).toBe(MoveFlags.CASTLE_QUEEN);
+  });
+
+  it('rejects black castling out of check', () => {
+    const state = parseFen('4k2r/8/8/8/8/8/8/K3R3 b k - 0 1');
+    expect(moveMap(state).has('e8->g8')).toBe(false);
+  });
+
+  it('rejects black castling through an attacked f8 or d8', () => {
+    const throughF8 = parseFen('4k2r/5R2/8/8/8/8/8/K7 b k - 0 1');
+    expect(moveMap(throughF8).has('e8->g8')).toBe(false);
+
+    const throughD8 = parseFen('r3k3/3R4/8/8/8/8/8/K7 b q - 0 1');
+    expect(moveMap(throughD8).has('e8->c8')).toBe(false);
+  });
+});
+
+describe('en passant legality', () => {
+  it('allows the capture the ply after a double push', () => {
+    const state = parseFen('7k/3p4/8/4P3/8/8/8/K7 b - - 0 1');
+    makeMove(state, movesTo(state, 'd7', 'd5')[0]);
+    expect(moveMap(state).get('e5->d6')).toBe(
+      MoveFlags.CAPTURE | MoveFlags.EN_PASSANT,
+    );
+  });
+
+  it('excludes the pinned en-passant capture from the legal list', () => {
+    // White b5 pawn is pinned by the h5 rook along rank 5. After bxc6 ep
+    // both pawns leave the rank and the a5 king hangs — pseudo-legal yes,
+    // legal no (the generic make/unmake + king-safety filter rejects it).
+    const state = parseFen('8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 b - - 0 1');
+    makeMove(state, movesTo(state, 'c7', 'c5')[0]);
+    expect(
+      generatePseudoLegalMoves(state).some(
+        (m) => algebraicOf(m.from) === 'b5' && algebraicOf(m.to) === 'c6',
+      ),
+    ).toBe(true);
+    expect(moveMap(state).has('b5->c6')).toBe(false);
+  });
+});
+
 describe('perft (legal-move oracle)', () => {
   it('initial position depth 1 = 20', () => {
     expect(perft(parseFen(START_FEN), 1)).toBe(20);
@@ -283,3 +386,64 @@ describe('perft (legal-move oracle)', () => {
     expect(perft(state, 4)).toBe(353663);
   }, 30_000);
 });
+
+// chessprogrammingwiki perft positions that exercise castling-rights
+// bookkeeping, the en-passant window (and pinned-ep-pawn rule), and
+// promotion across the search tree. Node counts are move-order-independent.
+const KIWIPETE_FEN =
+  'r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1';
+const POS4_EP_FEN =
+  'r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1';
+const POS5_PROMO_FEN =
+  'rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8';
+
+describe('perft (special-moves oracle)', () => {
+  it('Kiwipete (position 3) depths 1-3 = 48, 2039, 97862', () => {
+    const state = parseFen(KIWIPETE_FEN);
+    expect(perft(state, 1)).toBe(48);
+    expect(perft(state, 2)).toBe(2039);
+    expect(perft(state, 3)).toBe(97862);
+  }, 30_000);
+
+  it('position 4 (en passant) depths 1-4 = 6, 264, 9467, 422333', () => {
+    const state = parseFen(POS4_EP_FEN);
+    expect(perft(state, 1)).toBe(6);
+    expect(perft(state, 2)).toBe(264);
+    expect(perft(state, 3)).toBe(9467);
+    expect(perft(state, 4)).toBe(422333);
+  }, 30_000);
+
+  it('position 5 (promotion) depths 1-3 = 44, 1486, 62379', () => {
+    const state = parseFen(POS5_PROMO_FEN);
+    expect(perft(state, 1)).toBe(44);
+    expect(perft(state, 2)).toBe(1486);
+    expect(perft(state, 3)).toBe(62379);
+  }, 30_000);
+});
+
+// The deep runs (~4M / ~194M / ~2M / ~90M nodes) stay opt-in until #9's
+// perft tiers land: `PERFT_DEEP=1 npm test`.
+describe.skipIf(process.env.PERFT_DEEP !== '1')(
+  'perft (deep runs, opt-in via PERFT_DEEP=1)',
+  () => {
+    it('Kiwipete depth 4 = 4085603', () => {
+      expect(perft(parseFen(KIWIPETE_FEN), 4)).toBe(4085603);
+    }, 300_000);
+
+    it('Kiwipete depth 5 = 193690690', () => {
+      expect(perft(parseFen(KIWIPETE_FEN), 5)).toBe(193690690);
+    }, 600_000);
+
+    it('position 4 depth 5 = 15833292', () => {
+      expect(perft(parseFen(POS4_EP_FEN), 5)).toBe(15833292);
+    }, 120_000);
+
+    it('position 5 depth 4 = 2103487', () => {
+      expect(perft(parseFen(POS5_PROMO_FEN), 4)).toBe(2103487);
+    }, 120_000);
+
+    it('position 5 depth 5 = 89941194', () => {
+      expect(perft(parseFen(POS5_PROMO_FEN), 5)).toBe(89941194);
+    }, 600_000);
+  },
+);
