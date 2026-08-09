@@ -6,6 +6,7 @@ import {
   squareFromAlgebraic,
 } from './board';
 import type { BoardState, CastlingRights } from './state';
+import { zobristHash } from './zobrist';
 import type { Color, Piece, PieceType, Square } from './types';
 import { PIECES } from './types';
 
@@ -181,7 +182,7 @@ export function parseFen(fen: string): BoardState {
   if (fields.length !== 6) {
     throw new Error(`invalid FEN: expected 6 fields, got ${fields.length}`);
   }
-  return {
+  const state: BoardState = {
     board: parsePlacement(fields[0]),
     turn: parseTurn(fields[1]),
     castling: parseCastling(fields[2]),
@@ -189,7 +190,10 @@ export function parseFen(fen: string): BoardState {
     halfmoveClock: parseCounter(fields[4], 'halfmove clock', 0),
     fullmoveNumber: parseCounter(fields[5], 'fullmove number', 1),
     history: [],
+    positionHashes: [],
   };
+  state.positionHashes.push(zobristHash(state));
+  return state;
 }
 
 function placementToFen(state: BoardState): string {

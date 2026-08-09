@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { square, squareFromAlgebraic } from './board';
 import { initialState } from './state';
+import { zobristHash } from './zobrist';
 import { PIECES } from './types';
 
 describe('initialState', () => {
@@ -39,5 +40,6 @@ describe('initialState', () => {
     expect(state.halfmoveClock).toBe(0);
     expect(state.fullmoveNumber).toBe(1);
     expect(state.history).toEqual([]);
+    expect(state.positionHashes).toEqual([zobristHash(state)]);
   });
 });

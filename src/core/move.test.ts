@@ -34,6 +34,7 @@ function craftedState(
     halfmoveClock: 0,
     fullmoveNumber: 1,
     history: [],
+    positionHashes: [],
     ...overrides,
   };
   for (const [alg, piece] of Object.entries(pieces)) {
