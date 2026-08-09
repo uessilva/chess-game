@@ -6,10 +6,10 @@ import {
   isFiftyMoveDraw,
   isInsufficientMaterial,
   isThreefoldRepetition,
+  perft,
   zobristHash,
 } from './index';
 import { parseFen, START_FEN, toFen } from './fen';
-import { generateLegalMoves } from './legality';
 import { makeMove, unmakeMove } from './move';
 import type { BoardState } from './state';
 import { initialState } from './state';
@@ -53,20 +53,6 @@ function mv(from: string, to: string, piece: PieceType, flags = 0): Move {
     piece,
     flags,
   };
-}
-
-/** Recursive perft node counter over legal moves (regression gate only). */
-function perft(state: BoardState, depth: number): number {
-  if (depth === 0) {
-    return 1;
-  }
-  let nodes = 0;
-  for (const move of generateLegalMoves(state)) {
-    makeMove(state, move);
-    nodes += perft(state, depth - 1);
-    unmakeMove(state);
-  }
-  return nodes;
 }
 
 describe('isFiftyMoveDraw', () => {

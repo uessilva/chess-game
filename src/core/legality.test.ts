@@ -9,6 +9,7 @@ import {
   isInCheck,
   isSquareAttacked,
   isStalemate,
+  perft,
   START_FEN,
 } from './index';
 import { makeMove, unmakeMove } from './move';
@@ -49,20 +50,6 @@ function movesTo(state: BoardState, from: string, to: string): Move[] {
 /** Assert the exact legal move set of a position. */
 function expectExactMoves(state: BoardState, expected: string[]): void {
   expect([...moveMap(state).keys()].sort()).toEqual([...expected].sort());
-}
-
-/** Recursive perft node counter over legal moves. */
-function perft(state: BoardState, depth: number): number {
-  if (depth === 0) {
-    return 1;
-  }
-  let nodes = 0;
-  for (const move of generateLegalMoves(state)) {
-    makeMove(state, move);
-    nodes += perft(state, depth - 1);
-    unmakeMove(state);
-  }
-  return nodes;
 }
 
 describe('src/core exports', () => {
@@ -357,28 +344,11 @@ describe('en passant legality', () => {
   });
 });
 
-describe('perft (legal-move oracle)', () => {
-  it('initial position depth 1 = 20', () => {
-    expect(perft(parseFen(START_FEN), 1)).toBe(20);
-  });
-
-  it('initial position depth 2 = 400', () => {
-    expect(perft(parseFen(START_FEN), 2)).toBe(400);
-  });
-
-  it('initial position depth 3 = 8902', () => {
-    expect(perft(parseFen(START_FEN), 3)).toBe(8902);
-  });
-
-  it('initial position depth 4 = 197281, the full-rules oracle', () => {
-    // Castling, en passant, and promotion are unreachable at depth <= 4
-    // from startpos, so pseudo-legal + king-safety reproduces the oracle.
-    expect(perft(parseFen(START_FEN), 4)).toBe(197281);
-  }, 30_000);
-
+describe('perft (additional regression fixtures)', () => {
   it('pin-heavy pawnless position depths 1-4 = 24, 667, 13970, 353663', () => {
     // python-chess 1.11-verified fixture (not a chessprogrammingwiki
-    // position): white Ra1/Ne3/Kg1 vs black Be5/Kg8, rich in pins.
+    // position): white Ra1/Ne3/Kg1 vs black Be5/Kg8, rich in pins. The
+    // six CPW oracle positions live in perft.fixtures.test.ts.
     const state = parseFen('r5k1/8/8/4b3/8/4N3/8/R5K1 w - - 0 1');
     expect(perft(state, 1)).toBe(24);
     expect(perft(state, 2)).toBe(667);
@@ -386,64 +356,3 @@ describe('perft (legal-move oracle)', () => {
     expect(perft(state, 4)).toBe(353663);
   }, 30_000);
 });
-
-// chessprogrammingwiki perft positions that exercise castling-rights
-// bookkeeping, the en-passant window (and pinned-ep-pawn rule), and
-// promotion across the search tree. Node counts are move-order-independent.
-const KIWIPETE_FEN =
-  'r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1';
-const POS4_EP_FEN =
-  'r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1';
-const POS5_PROMO_FEN =
-  'rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8';
-
-describe('perft (special-moves oracle)', () => {
-  it('Kiwipete (position 3) depths 1-3 = 48, 2039, 97862', () => {
-    const state = parseFen(KIWIPETE_FEN);
-    expect(perft(state, 1)).toBe(48);
-    expect(perft(state, 2)).toBe(2039);
-    expect(perft(state, 3)).toBe(97862);
-  }, 30_000);
-
-  it('position 4 (en passant) depths 1-4 = 6, 264, 9467, 422333', () => {
-    const state = parseFen(POS4_EP_FEN);
-    expect(perft(state, 1)).toBe(6);
-    expect(perft(state, 2)).toBe(264);
-    expect(perft(state, 3)).toBe(9467);
-    expect(perft(state, 4)).toBe(422333);
-  }, 30_000);
-
-  it('position 5 (promotion) depths 1-3 = 44, 1486, 62379', () => {
-    const state = parseFen(POS5_PROMO_FEN);
-    expect(perft(state, 1)).toBe(44);
-    expect(perft(state, 2)).toBe(1486);
-    expect(perft(state, 3)).toBe(62379);
-  }, 30_000);
-});
-
-// The deep runs (~4M / ~194M / ~2M / ~90M nodes) stay opt-in until #9's
-// perft tiers land: `PERFT_DEEP=1 npm test`.
-describe.skipIf(process.env.PERFT_DEEP !== '1')(
-  'perft (deep runs, opt-in via PERFT_DEEP=1)',
-  () => {
-    it('Kiwipete depth 4 = 4085603', () => {
-      expect(perft(parseFen(KIWIPETE_FEN), 4)).toBe(4085603);
-    }, 300_000);
-
-    it('Kiwipete depth 5 = 193690690', () => {
-      expect(perft(parseFen(KIWIPETE_FEN), 5)).toBe(193690690);
-    }, 600_000);
-
-    it('position 4 depth 5 = 15833292', () => {
-      expect(perft(parseFen(POS4_EP_FEN), 5)).toBe(15833292);
-    }, 120_000);
-
-    it('position 5 depth 4 = 2103487', () => {
-      expect(perft(parseFen(POS5_PROMO_FEN), 4)).toBe(2103487);
-    }, 120_000);
-
-    it('position 5 depth 5 = 89941194', () => {
-      expect(perft(parseFen(POS5_PROMO_FEN), 5)).toBe(89941194);
-    }, 600_000);
-  },
-);

@@ -4,5 +4,6 @@ export * from './fen';
 export * from './legality';
 export * from './move';
 export * from './movegen';
+export * from './perft';
 export * from './state';
 export * from './types';

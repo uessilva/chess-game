@@ -1,0 +1,31 @@
+name: Perft Deep
+
+# Nightly correctness oracle for the deep perft tier (task 1.9). The PR
+# ci.yml runs only the fast tier; this workflow runs the deep runs on a
+# schedule so a movegen regression that only shows at depth 5-6 is caught
+# without slowing down every PR. The deep tests are plain vitest
+# assertions (expected vs actual node counts), so a mismatch fails the
+# job loudly — never a silent skip.
+
+on:
+  schedule:
+    - cron: '23 3 * * *' # nightly at 03:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  perft-deep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Run the deep perft tier
+        run: npm run test:perft:deep
