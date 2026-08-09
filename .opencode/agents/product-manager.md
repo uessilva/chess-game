@@ -1,7 +1,6 @@
 ---
 description: Grooms raw issues into agent-ready specs AND does final user-perspective acceptance review after implementation passes tests. Use for issue grooming or product/UX/DX acceptance review.
 mode: subagent
-model: opencode-go/deepseek-v4-flash
 permission:
   webfetch: deny
   websearch: deny
