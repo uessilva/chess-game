@@ -1,4 +1,5 @@
 import { emptyBoard, square } from './board';
+import { zobristHash } from './zobrist';
 import type { Color, Move, Piece, PieceType, Square } from './types';
 import { PIECES } from './types';
 
@@ -35,6 +36,13 @@ export interface BoardState {
   halfmoveClock: number;
   fullmoveNumber: number;
   history: UndoInfo[];
+  /**
+   * Zobrist hashes of every position reached, current position last.
+   * Seeded with the starting position by parseFen/initialState; makeMove
+   * pushes, unmakeMove pops. Position-irrelevant (not serialized by
+   * toFen) — threefold repetition (#8) reads it.
+   */
+  positionHashes: bigint[];
 }
 
 const BACK_RANK: readonly PieceType[] = [
@@ -60,7 +68,7 @@ export function initialState(): BoardState {
     board[square(file, 6)] = PIECES.black.pawn;
     board[square(file, 7)] = PIECES.black[BACK_RANK[file]];
   }
-  return {
+  const state: BoardState = {
     board,
     turn: 'white',
     castling: {
@@ -73,5 +81,8 @@ export function initialState(): BoardState {
     halfmoveClock: 0,
     fullmoveNumber: 1,
     history: [],
+    positionHashes: [],
   };
+  state.positionHashes.push(zobristHash(state));
+  return state;
 }

@@ -1,4 +1,5 @@
 export * from './board';
+export * from './draw';
 export * from './fen';
 export * from './legality';
 export * from './move';

@@ -1,4 +1,5 @@
 import { fileOf, rankOf, square } from './board';
+import { zobristHash } from './zobrist';
 import type { BoardState, CastlingRights, UndoInfo } from './state';
 import type { Color, Move } from './types';
 import { MoveFlags, opposite, PIECES } from './types';
@@ -120,6 +121,7 @@ export function makeMove(state: BoardState, move: Move): void {
   }
   state.turn = opposite(mover);
   state.history.push(undo);
+  state.positionHashes.push(zobristHash(state));
 }
 
 /**
@@ -162,6 +164,7 @@ export function unmakeMove(state: BoardState): Move {
   state.castling = undo.prevCastling;
   state.enPassant = undo.prevEnPassant;
   state.halfmoveClock = undo.prevHalfmove;
+  state.positionHashes.pop();
 
   return move;
 }
