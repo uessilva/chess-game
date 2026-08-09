@@ -11,6 +11,9 @@ one issue per numbered task (X.Y), grouped by milestone per phase. Work them
 in numeric order. The board tracks status and progress; this file holds the
 durable conventions.
 
+The day-to-day development workflow — issue lifecycle, agent pipeline, how to
+pick and ship issues — lives in `_docs/` (start with `_docs/PROCESS.md`).
+
 ## Locked-in Decisions
 
 - **Stack:** TypeScript (Web)
