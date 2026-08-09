@@ -9,13 +9,14 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage --exclude src/core/perft.fixtures.test.ts",
+    "test:perft:deep": "PERFT_DEEP=1 vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:modules": "depcruise src",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run check:modules && npm run test:coverage"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run check:modules && npm test && npm run test:coverage"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.2.1",

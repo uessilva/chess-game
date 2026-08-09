@@ -23,6 +23,11 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
+      # Fast perft tier (all six CPW fixtures) runs every PR. The heavy
+      # runs (~16.5M nodes) overflow V8's 32-bit coverage counters, so the
+      # fixtures run here without instrumentation; the coverage-gated
+      # suite below excludes them (see the test:coverage script).
+      - run: npm test
       - run: npm run test:coverage
       - run: npm run build
       - run: npm run check:modules

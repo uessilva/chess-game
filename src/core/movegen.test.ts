@@ -51,20 +51,6 @@ function expectExactMoves(state: BoardState, expected: string[]): void {
   expect([...moveMap(state).keys()].sort()).toEqual([...expected].sort());
 }
 
-/** Recursive perft node counter over pseudo-legal moves. */
-function perft(state: BoardState, depth: number): number {
-  if (depth === 0) {
-    return 1;
-  }
-  let nodes = 0;
-  for (const move of generatePseudoLegalMoves(state)) {
-    makeMove(state, move);
-    nodes += perft(state, depth - 1);
-    unmakeMove(state);
-  }
-  return nodes;
-}
-
 describe('generatePseudoLegalMoves', () => {
   it('is exported from src/core', () => {
     expect(generatePseudoLegalMoves).toBeTypeOf('function');
@@ -448,24 +434,8 @@ describe('promotion generation', () => {
   });
 });
 
-describe('perft (pseudo-legal oracle)', () => {
-  it('initial position depth 1 = 20', () => {
-    expect(perft(parseFen(START_FEN), 1)).toBe(20);
-  });
-
-  it('initial position depth 2 = 400', () => {
-    expect(perft(parseFen(START_FEN), 2)).toBe(400);
-  });
-
-  it('initial position depth 3 = 8902', () => {
-    expect(perft(parseFen(START_FEN), 3)).toBe(8902);
-  });
-
-  it('Kiwipete depth 1 = 48 (both castles generated)', () => {
-    expect(perft(parseFen(KIWIPETE_FEN), 1)).toBe(48);
-  });
-
-  it('make/unmake round-trips every generated move, keeping perft sound', () => {
+describe('make/unmake round-trip', () => {
+  it('round-trips every generated move, keeping perft sound', () => {
     const state = parseFen(START_FEN);
     const snapshot = structuredClone(state);
     for (const move of generatePseudoLegalMoves(state)) {
