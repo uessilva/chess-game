@@ -48,7 +48,8 @@ src/
 ## Quality Gates
 
 All enforced in CI (GitHub Actions) on every PR, with required status checks
-on `main`. `npm run check` runs the same chain locally.
+on `main`. `npm run check` runs the same chain locally. Merges are automated
+by the orchestrator and are blocked until the required checks pass.
 
 - **Typecheck:** `tsc --noEmit` (Vite dev does NOT typecheck — esbuild strips
   types). tsconfig uses `"strict": true`.
@@ -69,8 +70,10 @@ on `main`. `npm run check` runs the same chain locally.
 
 - **Task tracking:** GitHub Projects kanban board — one issue per task,
   milestones per phase. Issues are the source of truth for the plan.
-- **Every task gets its own PR, kept small.** One issue per PR. The owner
-  reviews each PR personally — favor small, focused diffs; split work further
+- **Every task gets its own PR, kept small.** One issue per PR. The agent
+  pipeline owns the PR lifecycle: the software engineer opens it, the tester
+  tests it, the Product Manager accepts or rejects it, and the orchestrator
+  merges it once accepted — favor small, focused diffs; split work further
   rather than opening a large PR.
 - **Commit messages:** `<prefix>: <short phrase>` where prefix is one of
   `feat`, `fix`, `docs`, `chore`. Example: `feat: add en passant move generation`.
