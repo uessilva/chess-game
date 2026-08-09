@@ -1,13 +1,16 @@
-import { BOARD_SIZE, isOnBoard } from './board';
+import { BOARD_SIZE, isOnBoard, rankOf, square } from './board';
 import { makeMove, unmakeMove } from './move';
 import { generatePseudoLegalMoves } from './movegen';
 import type { BoardState } from './state';
 import type { Color, Move, Piece, PieceType, Square } from './types';
-import { opposite } from './types';
+import { MoveFlags, opposite } from './types';
 
 /**
- * Legality layer (task 1.6): king-safety filtering plus check, checkmate,
- * and stalemate detection, built on the pseudo-legal generator (task 1.5).
+ * Legality layer (task 1.6, extended by task 1.7): king-safety filtering
+ * plus check, checkmate, and stalemate detection, built on the
+ * pseudo-legal generator (task 1.5). Task 1.7 adds the castling
+ * king-safety rules (out of / through check) that the generic post-make
+ * filter cannot catch.
  *
  * Attack detection follows FIDE Laws article 3.1.3: a piece attacks a
  * square even when pinned. `isSquareAttacked` only asks whether a piece of
@@ -143,14 +146,41 @@ export function isInCheck(state: BoardState, color: Color): boolean {
 }
 
 /**
+ * Castling safety beyond the generic post-make king-safety filter: the
+ * king must not be in check on its origin square (out of check) and the
+ * square it crosses — f1/d1 for white, f8/d8 for black — must not be
+ * attacked in the pre-move position (through check). The destination
+ * square is already covered by the post-make isInCheck test, and the
+ * queenside rook square (b1/b8) may be attacked — the king never crosses
+ * it.
+ */
+function castlePathIsSafe(state: BoardState, move: Move): boolean {
+  const crossed = square(
+    move.flags & MoveFlags.CASTLE_KING ? 5 : 3,
+    rankOf(move.from),
+  );
+  return (
+    !isInCheck(state, state.turn) &&
+    !isSquareAttacked(state, crossed, opposite(state.turn))
+  );
+}
+
+/**
  * The pseudo-legal moves for the side to move, minus any after which the
  * mover's king is in check. Correct-by-construction: try each move with
  * makeMove, test the mover's king, then unmakeMove. No pin pre-filtering
- * or check-evasion shortcuts — correctness before optimization.
+ * or check-evasion shortcuts — correctness before optimization. Castling
+ * moves additionally get the out-of / through-check rejection above.
  */
 export function generateLegalMoves(state: BoardState): Move[] {
   const legal: Move[] = [];
   for (const move of generatePseudoLegalMoves(state)) {
+    if (
+      (move.flags & (MoveFlags.CASTLE_KING | MoveFlags.CASTLE_QUEEN)) !== 0 &&
+      !castlePathIsSafe(state, move)
+    ) {
+      continue;
+    }
     makeMove(state, move);
     // makeMove flips state.turn, so the mover is opposite(state.turn) now.
     if (!isInCheck(state, opposite(state.turn))) {
