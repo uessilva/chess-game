@@ -10,6 +10,7 @@ import {
 import { pieceLayout } from './pieceLayout';
 import {
   DARK_SQUARE_COLOR,
+  LIFT_OFFSET,
   LIGHT_SQUARE_COLOR,
   MOVE_DOT_COLOR,
   MOVE_DOT_RADIUS_FACTOR,
@@ -199,6 +200,86 @@ function createOverlayFakeCtx(): {
   } as unknown as CanvasRenderingContext2D;
   return { ctx, fillStyleSeq, fillRect, beginPath, moveTo, arc, fill };
 }
+
+describe('renderBoard lifted piece', () => {
+  it('skips the lifted origin square and draws the piece at the pointer position', () => {
+    const { ctx, drawImage } = createFakeCtx();
+    const sprites = fullSpriteMap();
+    renderBoard(ctx, parseFen(START_FEN), sprites, {
+      squareSize: 64,
+      lifted: { from: squareFromAlgebraic('g1'), position: { x: 288, y: 416 } },
+    });
+
+    // Still one draw per piece: 31 on the board + the lifted knight.
+    expect(drawImage).toHaveBeenCalledTimes(32);
+    const drawnPositions = drawImage.mock.calls.map((args) => [
+      args[1],
+      args[2],
+    ]);
+    // g1 (384, 448) renders empty while lifted...
+    expect(drawnPositions).not.toContainEqual([384, 448]);
+    // ...and the knight follows the pointer: centered at (288, 416) + LIFT_OFFSET.
+    expect(drawnPositions).toContainEqual([
+      288 - 32 + LIFT_OFFSET.x,
+      416 - 32 + LIFT_OFFSET.y,
+    ]);
+    // Neighboring pieces keep their squares.
+    expect(drawnPositions).toContainEqual([256, 448]); // e1 king
+    expect(drawnPositions).toContainEqual([448, 448]); // h1 rook
+  });
+
+  it('mirrors the lift for the black orientation', () => {
+    const { ctx, drawImage } = createFakeCtx();
+    const sprites = fullSpriteMap();
+    renderBoard(ctx, parseFen(START_FEN), sprites, {
+      squareSize: 64,
+      orientation: 'black',
+      lifted: { from: squareFromAlgebraic('g1'), position: { x: 32, y: 32 } },
+    });
+
+    const drawnPositions = drawImage.mock.calls.map((args) => [
+      args[1],
+      args[2],
+    ]);
+    // In black orientation g1 is at (64, 0) and renders empty while lifted.
+    expect(drawnPositions).not.toContainEqual([64, 0]);
+    // The lifted knight is centered at (32, 32) + LIFT_OFFSET.
+    expect(drawnPositions).toContainEqual([
+      32 - 32 + LIFT_OFFSET.x,
+      32 - 32 + LIFT_OFFSET.y,
+    ]);
+  });
+
+  it('draws nothing extra when the lifted origin has no piece', () => {
+    const { ctx, drawImage } = createFakeCtx();
+    const sprites = fullSpriteMap();
+    renderBoard(ctx, parseFen('4k3/8/8/8/8/8/8/4K3 w - - 0 1'), sprites, {
+      squareSize: 64,
+      lifted: { from: squareFromAlgebraic('g1'), position: { x: 288, y: 416 } },
+    });
+
+    // Only the two kings are drawn; no phantom lifted sprite for g1.
+    expect(drawImage).toHaveBeenCalledTimes(2);
+  });
+
+  it('draws no lifted sprite when its sprite is not loaded', () => {
+    const { ctx, drawImage } = createFakeCtx();
+    renderBoard(
+      ctx,
+      parseFen(START_FEN),
+      {},
+      {
+        squareSize: 64,
+        lifted: {
+          from: squareFromAlgebraic('g1'),
+          position: { x: 288, y: 416 },
+        },
+      },
+    );
+
+    expect(drawImage).toHaveBeenCalledTimes(0);
+  });
+});
 
 describe('renderSelection', () => {
   it('draws nothing for a null selection', () => {

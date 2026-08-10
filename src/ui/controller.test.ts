@@ -177,6 +177,30 @@ describe('createController: executing moves', () => {
   });
 });
 
+describe('createController: clearSelection', () => {
+  it('drops the selection without touching core state', () => {
+    const controller = createController(parseFen(START_FEN));
+    controller.handleSquareClick(sq('e2'));
+    expect(controller.selection).not.toBeNull();
+    const before = toFen(controller.state);
+
+    controller.clearSelection();
+
+    expect(controller.selection).toBeNull();
+    expect(toFen(controller.state)).toBe(before);
+  });
+
+  it('is a no-op when nothing is selected', () => {
+    const controller = createController(parseFen(START_FEN));
+    const before = toFen(controller.state);
+
+    controller.clearSelection();
+
+    expect(controller.selection).toBeNull();
+    expect(toFen(controller.state)).toBe(before);
+  });
+});
+
 describe('createController: frozen positions', () => {
   it('selects nothing in a checkmated position', () => {
     const controller = createController(
