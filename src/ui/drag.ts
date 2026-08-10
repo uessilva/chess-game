@@ -28,7 +28,13 @@ export interface Drag {
 export type GestureResolution =
   | { readonly kind: 'click'; readonly square: Square }
   | { readonly kind: 'drag-move' }
-  | { readonly kind: 'drag-revert' };
+  | { readonly kind: 'drag-revert' }
+  /**
+   * A drop onto a square whose only legal variants promote: the move is NOT
+   * applied — the caller holds it in UI state and opens the promotion
+   * picker (#13), superseding #12's silent no-op.
+   */
+  | { readonly kind: 'promotion'; readonly from: Square; readonly to: Square };
 
 /**
  * Click/drag interaction state machine. Owns the lift gesture state strictly
@@ -47,9 +53,10 @@ export type GestureResolution =
  *   is active are ignored.
  * - Moving beyond `DRAG_THRESHOLD_PX` turns an armed lift into a real drag;
  *   `pointerUp` then hit-tests the release point and, if it is a legal
- *   destination, executes the move (a promotion drop resolves to no move —
- *   the picker is #13). Anything else reverts: piece back on its origin
- *   square, turn unchanged.
+ *   destination, executes the move. A promotion drop resolves to a
+ *   `{ kind: 'promotion' }` resolution instead — the caller holds the move
+ *   in UI state and opens the picker (#13). Anything else reverts: piece
+ *   back on its origin square, turn unchanged.
  * - A `pointerUp` within the threshold resolves as a click on the release
  *   square, delegated to the caller so #11's selection/execution still runs.
  * - `pointerCancel` (or capture loss) aborts the gesture and reverts.
@@ -190,6 +197,11 @@ export function createDragMachine(options: DragMachineOptions): DragMachine {
           if (drop !== null && drop !== 'promotion') {
             makeMove(state, drop);
             return { kind: 'drag-move' };
+          }
+          if (drop === 'promotion') {
+            // Hold the promotion in UI state (the picker is #13); the move
+            // is not applied and the pawn stays on its origin square.
+            return { kind: 'promotion', from: g.from, to };
           }
         }
         return { kind: 'drag-revert' };

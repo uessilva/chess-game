@@ -1,5 +1,7 @@
-import { generateLegalMoves, makeMove } from '../core';
-import type { BoardState, Color, Move, Square } from '../core';
+import { generateLegalMoves, initialState, makeMove } from '../core';
+import type { BoardState, Color, Move, PieceType, Square } from '../core';
+import { MoveFlags } from '../core';
+import { deriveGameStatus, isTerminal } from './gameStatus';
 
 /**
  * UI selection state: the chosen square plus the legal target squares derived
@@ -16,6 +18,18 @@ export interface Selection {
 }
 
 /**
+ * A promotion commit held in UI state: the pawn's from/to pair and the
+ * mover's color (the color the picker offers). The move is NOT applied to
+ * core until the player chooses a piece (`choosePromotion`) — the picker
+ * supersedes #11's default-queen and #12's silent no-op behaviors.
+ */
+export interface PendingPromotion {
+  readonly from: Square;
+  readonly to: Square;
+  readonly color: Color;
+}
+
+/**
  * Click-to-move interaction controller. Owns the selection state and drives a
  * core `BoardState`, consuming it exactly as exported: targets come from
  * `generateLegalMoves(state)` and moves execute only through
@@ -28,25 +42,58 @@ export interface Selection {
  * - Click a piece of `state.turn` → select it; dots on every legal target.
  * - Click a different piece of `state.turn` → re-select and refresh the dots.
  * - Click a dotted target → execute the matching move via `makeMove`, clear.
+ * - Click a dotted back-rank target whose legal variants all promote → the
+ *   move is held as `pendingPromotion` (picker opens), never applied.
  * - Click anything else → clear the selection; no move; core unchanged.
- * - When the side to move has no legal moves, nothing ever selects.
+ * - When the game is over (mate, stalemate, or an auto-ended draw) or the
+ *   promotion picker is open, no click selects or moves anything.
  */
 export interface Controller {
   readonly state: BoardState;
   readonly selection: Selection | null;
+  /**
+   * A promotion commit awaiting a piece choice, or null. Lives in UI state
+   * only — core `BoardState` changes exclusively through `makeMove`.
+   */
+  readonly pendingPromotion: PendingPromotion | null;
   /** Apply one click on an on-board square (`sq` must be on the 0x88 board). */
   handleSquareClick(sq: Square): void;
+  /**
+   * Hold a from/to pair that only resolves to promotion variants as the
+   * pending promotion (the picker path used by drag-and-drop). No move is
+   * applied; the picker's piece choices call `choosePromotion`.
+   */
+  holdPromotion(from: Square, to: Square): void;
+  /**
+   * Apply the pending promotion with exactly the chosen piece via
+   * `makeMove`: the pawn is replaced and the turn passes.
+   */
+  choosePromotion(pieceType: PieceType): void;
+  /**
+   * Discard the pending promotion without applying any move: the pawn stays
+   * on its origin square and the selection clears.
+   */
+  cancelPromotion(): void;
   /**
    * Drop the current selection without touching core state. Used when a drag
    * gesture supersedes the click UI (a drop or cancel leaves any stale
    * selection from an earlier click obsolete).
    */
   clearSelection(): void;
+  /**
+   * Reset core to the starting position in place (the same object the drag
+   * machine and render loop hold) and clear every piece of UI state:
+   * selection, pending promotion. Game-over banner/check indicator live in
+   * the caller and are re-derived from the reset state.
+   */
+  reset(): void;
 }
 
-export function createController(state: BoardState): Controller {
+export function createController(initial: BoardState): Controller {
+  const state = initial;
   let selectedFrom: Square | null = null;
   let targets: readonly Square[] = [];
+  let pending: PendingPromotion | null = null;
 
   function clearSelection(): void {
     selectedFrom = null;
@@ -62,6 +109,56 @@ export function createController(state: BoardState): Controller {
     ];
   }
 
+  function holdPromotion(from: Square, to: Square): void {
+    const matches = generateLegalMoves(state).filter(
+      (move) =>
+        move.from === from &&
+        move.to === to &&
+        (move.flags & MoveFlags.PROMOTION) !== 0,
+    );
+    if (matches.length === 0) {
+      return;
+    }
+    pending = { from, to, color: state.turn };
+    clearSelection();
+  }
+
+  function choosePromotion(pieceType: PieceType): void {
+    if (pending === null) {
+      return;
+    }
+    const { from, to } = pending;
+    const move = generateLegalMoves(state).find(
+      (m) => m.from === from && m.to === to && m.promotion === pieceType,
+    );
+    if (move !== undefined) {
+      makeMove(state, move);
+    }
+    pending = null;
+    clearSelection();
+  }
+
+  function cancelPromotion(): void {
+    pending = null;
+    clearSelection();
+  }
+
+  function reset(): void {
+    const fresh = initialState();
+    // Copy the fresh state's fields onto the existing object so the shared
+    // reference held by the drag machine and the render loop stays valid.
+    state.board = fresh.board;
+    state.turn = fresh.turn;
+    state.castling = fresh.castling;
+    state.enPassant = fresh.enPassant;
+    state.halfmoveClock = fresh.halfmoveClock;
+    state.fullmoveNumber = fresh.fullmoveNumber;
+    state.history = fresh.history;
+    state.positionHashes = fresh.positionHashes;
+    pending = null;
+    clearSelection();
+  }
+
   return {
     get state() {
       return state;
@@ -69,16 +166,38 @@ export function createController(state: BoardState): Controller {
     get selection(): Selection | null {
       return selectedFrom === null ? null : { from: selectedFrom, targets };
     },
+    get pendingPromotion(): PendingPromotion | null {
+      return pending;
+    },
     clearSelection(): void {
       clearSelection();
     },
+    holdPromotion(from: Square, to: Square): void {
+      holdPromotion(from, to);
+    },
+    choosePromotion(pieceType: PieceType): void {
+      choosePromotion(pieceType);
+    },
+    cancelPromotion(): void {
+      cancelPromotion();
+    },
+    reset(): void {
+      reset();
+    },
     handleSquareClick(sq: Square): void {
-      const moves = generateLegalMoves(state);
-      if (moves.length === 0) {
-        // Checkmate/stalemate: the position is frozen — nothing selects.
+      // While the picker is open the only allowed paths are choosing a piece
+      // or canceling; board clicks never move pieces or change selection.
+      if (pending !== null) {
+        return;
+      }
+      // Game over: mate, stalemate, or an auto-ended draw — the board is
+      // frozen, nothing selects (the only control is New game).
+      if (isTerminal(deriveGameStatus(state))) {
         clearSelection();
         return;
       }
+
+      const moves = generateLegalMoves(state);
 
       const piece = state.board[sq];
       if (piece !== null && piece.color === state.turn) {
@@ -88,14 +207,15 @@ export function createController(state: BoardState): Controller {
 
       if (selectedFrom !== null && targets.includes(sq)) {
         // The legal list holds one move per from/to pair, except a promotion,
-        // which carries four Q/R/B/N variants — execute the queen by default
-        // (the piece picker is #13).
-        const move = moves.find(
-          (m) =>
-            m.from === selectedFrom &&
-            m.to === sq &&
-            (m.promotion === undefined || m.promotion === 'queen'),
+        // which carries four Q/R/B/N variants — hold those for the picker.
+        const matches = moves.filter(
+          (m) => m.from === selectedFrom && m.to === sq,
         );
+        if (matches.some((m) => (m.flags & MoveFlags.PROMOTION) !== 0)) {
+          holdPromotion(selectedFrom, sq);
+          return;
+        }
+        const move = matches.find((m) => m.promotion === undefined);
         if (move !== undefined) {
           makeMove(state, move);
         }
