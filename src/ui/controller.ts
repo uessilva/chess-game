@@ -36,6 +36,12 @@ export interface Controller {
   readonly selection: Selection | null;
   /** Apply one click on an on-board square (`sq` must be on the 0x88 board). */
   handleSquareClick(sq: Square): void;
+  /**
+   * Drop the current selection without touching core state. Used when a drag
+   * gesture supersedes the click UI (a drop or cancel leaves any stale
+   * selection from an earlier click obsolete).
+   */
+  clearSelection(): void;
 }
 
 export function createController(state: BoardState): Controller {
@@ -62,6 +68,9 @@ export function createController(state: BoardState): Controller {
     },
     get selection(): Selection | null {
       return selectedFrom === null ? null : { from: selectedFrom, targets };
+    },
+    clearSelection(): void {
+      clearSelection();
     },
     handleSquareClick(sq: Square): void {
       const moves = generateLegalMoves(state);
