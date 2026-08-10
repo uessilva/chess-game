@@ -2,14 +2,21 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   fileOf,
+  generateLegalMoves,
+  makeMove,
   parseFen,
+  PIECES,
   rankOf,
   START_FEN,
   squareFromAlgebraic,
 } from '../core';
 import { pieceLayout } from './pieceLayout';
 import {
+  CHECK_GLOW_CENTER_COLOR,
+  CHECK_GLOW_EDGE_COLOR,
+  CHECK_GLOW_RADIUS_FACTOR,
   DARK_SQUARE_COLOR,
+  LAST_MOVE_COLOR,
   LIFT_OFFSET,
   LIGHT_SQUARE_COLOR,
   MOVE_DOT_COLOR,
@@ -347,5 +354,213 @@ describe('renderSelection', () => {
     );
     expect(fillRect).toHaveBeenCalledTimes(1);
     expect(arc).not.toHaveBeenCalled();
+  });
+});
+
+/** The legal e2-e4 move from the starting position (commits a pawn push). */
+function e2e4Move() {
+  const state = parseFen(START_FEN);
+  const move = generateLegalMoves(state).find(
+    (m) =>
+      m.from === squareFromAlgebraic('e2') &&
+      m.to === squareFromAlgebraic('e4'),
+  );
+  if (move === undefined) {
+    throw new Error('e2-e4 not legal in the starting position');
+  }
+  makeMove(state, move);
+  return state;
+}
+
+describe('renderBoard: last-move highlight', () => {
+  it('tints the last move from/to squares beneath the pieces', () => {
+    const { ctx, fillStyleSeq, fillRect } = createFakeCtx();
+    renderBoard(
+      ctx,
+      parseFen(START_FEN),
+      {},
+      {
+        squareSize: 64,
+        highlights: {
+          lastMove: {
+            from: squareFromAlgebraic('e2'),
+            to: squareFromAlgebraic('e4'),
+          },
+        },
+      },
+    );
+
+    // 64 squares + 2 highlight fills, drawn before any piece. The fill style
+    // is set once for both squares, then each square is filled.
+    expect(fillRect).toHaveBeenCalledTimes(66);
+    expect(fillRect).toHaveBeenCalledWith(256, 384, 64, 64); // e2
+    expect(fillRect).toHaveBeenCalledWith(256, 256, 64, 64); // e4
+    expect(fillStyleSeq[64]).toBe(LAST_MOVE_COLOR);
+  });
+
+  it('draws no highlight fills when the last move is null or absent', () => {
+    const { ctx, fillRect } = createFakeCtx();
+    renderBoard(ctx, parseFen(START_FEN), {}, { squareSize: 64 });
+    renderBoard(
+      ctx,
+      parseFen(START_FEN),
+      {},
+      {
+        squareSize: 64,
+        highlights: { lastMove: null },
+      },
+    );
+    // Two boards, 64 squares each, no extra highlight fills.
+    expect(fillRect).toHaveBeenCalledTimes(128);
+  });
+});
+
+describe('renderBoard: check glow', () => {
+  it('draws a radial red glow on the checked king square', () => {
+    const addColorStop = vi.fn();
+    const gradient = { addColorStop };
+    const fillStyleSeq: unknown[] = [];
+    let currentFillStyle = '';
+    const fillRect = vi.fn();
+    const createRadialGradient = vi.fn(() => gradient);
+    const ctx = {
+      get fillStyle() {
+        return currentFillStyle;
+      },
+      set fillStyle(value: string) {
+        currentFillStyle = value;
+        fillStyleSeq.push(value);
+      },
+      fillRect,
+      createRadialGradient,
+    } as unknown as CanvasRenderingContext2D;
+
+    renderBoard(
+      ctx,
+      parseFen(START_FEN),
+      {},
+      {
+        squareSize: 64,
+        highlights: { checkSquare: squareFromAlgebraic('e1') },
+      },
+    );
+
+    // e1 center (288, 480), radial radius = square * factor.
+    expect(createRadialGradient).toHaveBeenCalledTimes(1);
+    expect(createRadialGradient).toHaveBeenCalledWith(
+      288,
+      480,
+      0,
+      288,
+      480,
+      64 * CHECK_GLOW_RADIUS_FACTOR,
+    );
+    expect(addColorStop).toHaveBeenCalledWith(0, CHECK_GLOW_CENTER_COLOR);
+    expect(addColorStop).toHaveBeenCalledWith(1, CHECK_GLOW_EDGE_COLOR);
+    expect(fillRect).toHaveBeenCalledWith(256, 448, 64, 64); // e1
+    expect(fillStyleSeq[64]).toBe(gradient);
+  });
+
+  it('draws no glow when the check square is null or absent', () => {
+    const createRadialGradient = vi.fn(() => ({ addColorStop: vi.fn() }));
+    const ctx = {
+      fillRect: vi.fn(),
+      createRadialGradient,
+    } as unknown as CanvasRenderingContext2D;
+    renderBoard(ctx, parseFen(START_FEN), {}, { squareSize: 64 });
+    renderBoard(
+      ctx,
+      parseFen(START_FEN),
+      {},
+      {
+        squareSize: 64,
+        highlights: { checkSquare: null },
+      },
+    );
+    expect(createRadialGradient).not.toHaveBeenCalled();
+  });
+});
+
+describe('renderBoard: moving pieces', () => {
+  it('draws the in-flight piece at its interpolated position and skips from/to', () => {
+    const state = e2e4Move(); // core has the pawn on e4
+    const sprites = fullSpriteMap();
+    const { ctx, drawImage } = createFakeCtx();
+    renderBoard(ctx, state, sprites, {
+      squareSize: 64,
+      movingPieces: [
+        {
+          piece: PIECES.white.pawn,
+          from: squareFromAlgebraic('e2'),
+          to: squareFromAlgebraic('e4'),
+          position: { x: 256, y: 320 },
+        },
+      ],
+    });
+
+    // 31 pieces on the board (e4 skipped) + 1 moving pawn = 32 draws.
+    expect(drawImage).toHaveBeenCalledTimes(32);
+    const drawn = drawImage.mock.calls.map((args) => [args[1], args[2]]);
+    expect(drawn).toContainEqual([256, 320]); // interpolated glide position
+    expect(drawn).not.toContainEqual([256, 384]); // e2 (origin, empty)
+    expect(drawn).not.toContainEqual([256, 256]); // e4 (destination, skipped)
+    expect(drawn).toContainEqual([0, 448]); // a1 rook still drawn
+  });
+
+  it('skips both castling flights from/to while drawing both pieces on top', () => {
+    const state = parseFen('4k3/8/8/8/8/8/8/4K2R w K - 0 1');
+    const sprites = fullSpriteMap();
+    const { ctx, drawImage } = createFakeCtx();
+    renderBoard(ctx, state, sprites, {
+      squareSize: 64,
+      movingPieces: [
+        {
+          piece: PIECES.white.king,
+          from: squareFromAlgebraic('e1'),
+          to: squareFromAlgebraic('g1'),
+          position: { x: 320, y: 448 },
+        },
+        {
+          piece: PIECES.white.rook,
+          from: squareFromAlgebraic('h1'),
+          to: squareFromAlgebraic('f1'),
+          position: { x: 384, y: 448 },
+        },
+      ],
+    });
+
+    // Board pass: only the black king e8 remains (e1/h1/g1/f1 skipped) +
+    // 2 moving pieces = 3 draws.
+    expect(drawImage).toHaveBeenCalledTimes(3);
+    const drawn = drawImage.mock.calls.map((args) => [args[1], args[2]]);
+    expect(drawn).toContainEqual([256, 0]); // black king e8
+    expect(drawn).toContainEqual([320, 448]); // moving king
+    expect(drawn).toContainEqual([384, 448]); // moving rook
+    expect(drawn).not.toContainEqual([256, 448]); // e1
+    expect(drawn).not.toContainEqual([448, 448]); // h1
+    // The rook is drawn exactly once — the board pass skips f1 and h1.
+    expect(drawn.filter(([x, y]) => x === 384 && y === 448)).toHaveLength(1);
+  });
+
+  it('draws nothing extra when the moving piece sprite is not loaded', () => {
+    const state = e2e4Move();
+    const { ctx, drawImage } = createFakeCtx();
+    renderBoard(
+      ctx,
+      state,
+      {},
+      {
+        squareSize: 64,
+        movingPieces: [
+          {
+            piece: PIECES.white.pawn,
+            from: squareFromAlgebraic('e2'),
+            to: squareFromAlgebraic('e4'),
+            position: { x: 256, y: 320 },
+          },
+        ],
+      },
+    );
+    expect(drawImage).toHaveBeenCalledTimes(0);
   });
 });

@@ -21,6 +21,10 @@ import {
   statusLineLabel,
 } from './ui/gameStatus';
 import type { GameStatus } from './ui/gameStatus';
+import { createMoveAnimator } from './ui/moveAnimator';
+import type { MoveAnimator } from './ui/moveAnimator';
+import { createSoundPlayer } from './ui/sounds';
+import type { SoundPlayer } from './ui/sounds';
 
 export interface BoardMountResult {
   readonly canvas: HTMLCanvasElement;
@@ -29,6 +33,11 @@ export interface BoardMountResult {
   readonly spritesLoaded: Promise<void>;
   /** Click-to-move controller driving the board's core state. */
   readonly controller: Controller;
+  /**
+   * Piece-animation overlay state (task 2.5): active flights, last-move
+   * highlight, and check glow — pure UI state over the committed core.
+   */
+  readonly animator: MoveAnimator;
   /** Status line element showing whose turn it is (plus the "Check!" marker). */
   readonly statusLine: HTMLElement;
   /** Game-over banner: result and reason, visible only when the game is over. */
@@ -60,22 +69,28 @@ export interface BoardMountOptions {
   /** Injectable rAF so tests can drive the game loop deterministically. */
   readonly requestFrame?: (cb: FrameRequestCallback) => number;
   readonly cancelFrame?: (id: number) => void;
+  /** Injectable sound player; defaults to synthesized Web Audio tones. */
+  readonly sound?: SoundPlayer;
 }
 
 /**
  * Mount a playable two-player board into `container` rendering `START_FEN`
  * (or `options.fen`). A rAF-driven game loop owns the frame cadence: each
- * frame computes delta time, runs an **update** phase (status refreshes on
- * move commit — see syncUi), then a **render** phase that draws the core
- * state plus the selection overlay and any lifted drag piece. Pointer events
+ * frame computes delta time, runs an **update** phase (advances the #14
+ * piece-animation overlay and refreshes the check glow — status refreshes on
+ * move commit via syncUi), then a **render** phase that draws the core
+ * state plus the last-move/check overlays, the selection overlay, any
+ * in-flight moving pieces, and any lifted drag piece. Pointer events
  * are translated to the drag state machine (page coords → canvas pixels via
  * the bounding rect → `pixelToSquare`), which resolves each gesture as
  * either a #11 click (delegated to the controller), a promotion drop (held
  * in UI state so the picker opens), or a drag (applied through the same
  * `makeMove` path when legal, reverted otherwise). Core state changes only
  * through the controller and drag machine — the board always reflects (core
- * state, selection, drag, game status). Delta time is threaded through the
- * phases for #14's animations to consume.
+ * state, selection, drag, animation overlay, game status). Committed moves
+ * are handed to the animation overlay: click commits glide, drag commits
+ * snap; while a flight is in flight move input is locked out. Delta time is
+ * threaded through the update/render phases for #14's animations.
  */
 export function mountBoard(
   container: HTMLElement,
@@ -102,6 +117,16 @@ export function mountBoard(
     state,
     hitTest: (x: number, y: number): Square | null =>
       pixelToSquare(x, y, DEFAULT_SQUARE_SIZE, orientation),
+  });
+
+  // Piece-animation overlay (task 2.5): pure UI state advanced by the game
+  // loop's delta time. It reads the committed core state for the check glow
+  // and never gates, blocks, or rolls back a core move.
+  const animator = createMoveAnimator({
+    state,
+    squareSize: DEFAULT_SQUARE_SIZE,
+    orientation,
+    sound: options.sound ?? createSoundPlayer(),
   });
 
   const statusLine = document.createElement('div');
@@ -138,7 +163,11 @@ export function mountBoard(
       button.pieceImage = pieceImage;
       picker.appendChild(button);
       button.addEventListener('click', () => {
+        // Choosing a piece commits the held promotion; animate it (a picker
+        // choice is a click-style commit, never a drag snap).
+        const historyLength = state.history.length;
         controller.choosePromotion(pieceType);
+        commitFromHistory(false, historyLength);
         syncUi();
       });
       return button;
@@ -178,14 +207,21 @@ export function mountBoard(
   const emptySprites: SpriteMap = {};
   let currentSprites: SpriteMap = emptySprites;
   const render = (delta: number): void => {
-    // delta is threaded through for #14's animations; 2.3 draws every frame.
     void delta;
     const dragState = drag.drag;
     const lifted =
       dragState !== null && dragState.dragging
         ? { from: dragState.from, position: dragState.position }
         : undefined;
-    renderBoard(ctx, state, currentSprites, { orientation, lifted });
+    renderBoard(ctx, state, currentSprites, {
+      orientation,
+      lifted,
+      highlights: {
+        lastMove: animator.lastMove,
+        checkSquare: animator.checkSquare,
+      },
+      movingPieces: animator.flights,
+    });
     // While a piece is lifted, hide the (now stale) selection overlay — the
     // drag is the only interaction rendered; it clears on drop/cancel anyway.
     renderSelection(
@@ -214,16 +250,38 @@ export function mountBoard(
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
 
-  const resolve = (resolution: GestureResolution): void => {
+  /**
+   * Animate the most recently committed core move, if one was pushed since
+   * `historyLength`. `snap` marks a drag-dropped move (#12): the piece is
+   * already under the pointer, so it snaps into place with no tween —
+   * last-move highlight and sounds still apply.
+   */
+  const commitFromHistory = (snap: boolean, historyLength: number): void => {
+    if (state.history.length > historyLength) {
+      animator.commitMove(state.history[state.history.length - 1].move, snap);
+    }
+  };
+
+  const resolve = (
+    resolution: GestureResolution,
+    historyLengthBefore: number,
+  ): void => {
     if (resolution.kind === 'click') {
       // Within the click/drag threshold: #11's click flow runs unchanged.
+      const historyLength = state.history.length;
       controller.handleSquareClick(resolution.square);
+      commitFromHistory(false, historyLength);
     } else if (resolution.kind === 'promotion') {
       // A drop that only resolves to promotion variants: hold the move in
       // UI state and open the picker (supersedes #12's silent no-op).
       controller.holdPromotion(resolution.from, resolution.to);
+    } else if (resolution.kind === 'drag-move') {
+      // A completed drag applied its move inside the drag machine; animate
+      // it as a snap (no tween replayed from the piece's origin).
+      controller.clearSelection();
+      commitFromHistory(true, historyLengthBefore);
     } else {
-      // A completed drag (move applied or reverted) supersedes the click UI.
+      // A reverted drag supersedes the click UI.
       controller.clearSelection();
     }
     syncUi();
@@ -235,6 +293,12 @@ export function mountBoard(
       // click itself never starts a gesture or changes selection.
       controller.cancelPromotion();
       syncUi();
+      return;
+    }
+    if (animator.isAnimating) {
+      // A piece animation is in flight: the move is already applied in core,
+      // so no new gesture starts and the selection stays put — a UI lockout
+      // preventing conflicting tweens, never a core rollback.
       return;
     }
     if (isTerminal(status)) {
@@ -255,9 +319,10 @@ export function mountBoard(
   };
   const onPointerUp = (event: PointerEvent): void => {
     const { x, y } = toCanvasPoint(event);
+    const historyLength = state.history.length;
     const resolution = drag.pointerUp(x, y);
     if (resolution !== null) {
-      resolve(resolution);
+      resolve(resolution, historyLength);
     }
   };
   const onPointerCancel = (): void => {
@@ -285,6 +350,7 @@ export function mountBoard(
     }
     // No confirmation dialog — immediate reset for casual local play.
     controller.reset();
+    animator.reset();
     syncUi();
   };
   newGameButton.addEventListener('click', onNewGame);
@@ -311,10 +377,10 @@ export function mountBoard(
   let lastTime = 0;
 
   const update = (delta: number): void => {
-    // Game status is re-derived on move commit (syncUi), so nothing
-    // per-frame needs refreshing here; delta is threaded through for #14's
-    // animations.
-    void delta;
+    // Advance the piece-animation overlay by delta time; completed flights
+    // drop and the check glow refreshes from core's isInCheck. Game status
+    // itself is re-derived on move commit (syncUi), not per frame.
+    animator.update(delta);
   };
 
   const frame = (time: number): void => {
@@ -336,6 +402,7 @@ export function mountBoard(
     ctx,
     spritesLoaded,
     controller,
+    animator,
     statusLine,
     banner,
     newGameButton,

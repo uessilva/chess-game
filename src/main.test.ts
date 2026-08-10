@@ -106,6 +106,7 @@ function createFakeEnvironment(failSources: Set<string> = new Set()): {
     moveTo,
     arc,
     fill,
+    createRadialGradient: vi.fn(() => ({ addColorStop: vi.fn() })),
   } as unknown as CanvasRenderingContext2D;
 
   const listeners: Record<string, (event: unknown) => void> = {};
@@ -861,9 +862,17 @@ describe('mountBoard: game-over banner and freeze', () => {
       ['f3', 'g1'],
       ['f6', 'g8'],
     ];
+    // Each commit starts a 250 ms glide (task 2.5); advance the loop past it
+    // between moves so the next click is not locked out by the animation.
+    // The loop's first frame forces delta 0, so each move needs two frames:
+    // a no-advance frame then a 260 ms advance.
+    let time = 0;
     for (const [from, to] of shuffle) {
       clickSquare(env, from);
       clickSquare(env, to);
+      time += 1;
+      driver.runFrames([time, time + 260]);
+      time += 260;
     }
 
     expect(result.banner.hidden).toBe(false);
@@ -1191,5 +1200,354 @@ describe('mountBoard: new game', () => {
     expect(result.controller.state.turn).toBe('white');
     expect(toFen(result.controller.state)).toBe(START_TO_FEN);
     expect(result.statusLine.textContent).toBe('White to move');
+  });
+});
+
+/** The src of the sprite drawn at a canvas position, or undefined. */
+function drawnSpriteAt(
+  env: ReturnType<typeof createFakeEnvironment>,
+  x: number,
+  y: number,
+): string | undefined {
+  const call = env.drawImage.mock.calls.find(
+    (args) => args[1] === x && args[2] === y,
+  );
+  return call === undefined ? undefined : (call[0] as HTMLImageElement).src;
+}
+
+describe('mountBoard: move animation', () => {
+  it('glides a click-committed pawn and lands exactly on e4', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const result = mountBoard(env.container, {
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+    });
+    await result.spritesLoaded;
+    env.drawImage.mockClear();
+
+    clickSquare(env, 'e2');
+    clickSquare(env, 'e4');
+    // Core commits the moment the move commits — the animation is an overlay.
+    expect(result.controller.state.turn).toBe('black');
+
+    // The loop's first frame forces delta 0, so timestamp 1 initializes the
+    // clock; the t=126 frame is then 125 ms in (the eased midpoint).
+    driver.runFrames([1]); // t≈0: still at e2
+    env.drawImage.mockClear();
+    driver.runFrames([126]); // t=125: midpoint between e2 (256,384) and e4 (256,256)
+    expect(drawnPositions(env)).toContainEqual([256, 320]);
+    expect(drawnPositions(env)).not.toContainEqual([256, 384]); // e2
+    expect(drawnPositions(env)).not.toContainEqual([256, 256]); // e4
+    env.drawImage.mockClear();
+    driver.runFrames([251]); // t=250: flight complete — pawn drawn at e4 from core
+    expect(drawnPositions(env)).toContainEqual([256, 256]);
+    expect(result.animator.isAnimating).toBe(false);
+  });
+
+  it('ignores move input while an animation is in flight', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const result = mountBoard(env.container, {
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+    });
+    const afterE2E4 =
+      'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1';
+
+    clickSquare(env, 'e2');
+    clickSquare(env, 'e4');
+    driver.runFrames([1]); // flight active (clock initialized, delta 0)
+    expect(result.animator.isAnimating).toBe(true);
+
+    // Mid-animation clicks commit nothing and do not change selection.
+    clickSquare(env, 'g1');
+    driver.runFrames([126]);
+    expect(result.controller.selection).toBeNull();
+    expect(toFen(result.controller.state)).toBe(afterE2E4);
+
+    // Once the animation completes, input works again — it is Black to
+    // move, so selecting a black piece shows the dots.
+    driver.runFrames([251]);
+    expect(result.animator.isAnimating).toBe(false);
+    clickSquare(env, 'g8');
+    expect(result.controller.selection?.from).toBe(squareFromAlgebraic('g8'));
+  });
+
+  it('moves the last-move highlight to the newest committed move', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const result = mountBoard(env.container, {
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+    });
+
+    clickSquare(env, 'e2');
+    clickSquare(env, 'e4');
+    driver.runFrames([1, 251]); // let the glide finish (clock + 250 ms)
+    expect(result.animator.lastMove).toEqual({
+      from: squareFromAlgebraic('e2'),
+      to: squareFromAlgebraic('e4'),
+    });
+
+    // The opponent replies e7-e5: the highlight moves and e2/e4 are gone.
+    clickSquare(env, 'e7');
+    clickSquare(env, 'e5');
+    driver.runFrames([252, 512]);
+    expect(result.animator.lastMove).toEqual({
+      from: squareFromAlgebraic('e7'),
+      to: squareFromAlgebraic('e5'),
+    });
+  });
+
+  it('glides king and rook together on a castle', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const result = mountBoard(env.container, {
+      fen: '4k3/8/8/8/8/8/8/4K2R w K - 0 1',
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+    });
+    await result.spritesLoaded;
+    env.drawImage.mockClear();
+
+    clickSquare(env, 'e1');
+    clickSquare(env, 'g1');
+
+    // Core committed both pieces immediately.
+    expect(result.controller.state.board[squareFromAlgebraic('g1')]).toBe(
+      PIECES.white.king,
+    );
+    expect(result.controller.state.board[squareFromAlgebraic('f1')]).toBe(
+      PIECES.white.rook,
+    );
+    expect(result.animator.flights).toHaveLength(2);
+
+    driver.runFrames([1]);
+    env.drawImage.mockClear();
+    driver.runFrames([126]); // midpoint of both glides
+    expect(drawnSpriteAt(env, 320, 448)).toBe(SPRITE_SOURCES.wK); // e1→g1 mid
+    expect(drawnSpriteAt(env, 384, 448)).toBe(SPRITE_SOURCES.wR); // h1→f1 mid
+    expect(drawnSpriteAt(env, 256, 448)).toBeUndefined(); // e1 empty
+    expect(drawnSpriteAt(env, 448, 448)).toBeUndefined(); // h1 empty
+    // The last-move highlight covers the king's origin and destination.
+    expect(result.animator.lastMove).toEqual({
+      from: squareFromAlgebraic('e1'),
+      to: squareFromAlgebraic('g1'),
+    });
+  });
+
+  it('removes the en-passant pawn from its own square and glides only the capturer', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const result = mountBoard(env.container, {
+      fen: '4k3/3p4/8/4P3/8/8/8/4K3 b - - 0 1',
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+    });
+
+    clickSquare(env, 'd7');
+    clickSquare(env, 'd5');
+    driver.runFrames([1, 261]); // Black's double-push glide completes
+
+    clickSquare(env, 'e5');
+    clickSquare(env, 'd6');
+    // At commit time the black pawn is gone from d5 — its own square — and
+    // only the capturing pawn is in flight.
+    expect(result.controller.state.board[squareFromAlgebraic('d5')]).toBeNull();
+    // The capturing pawn lands on d6 (rank 6) — the en-passant target.
+    expect(toFen(result.controller.state)).toBe(
+      '4k3/8/3P4/8/8/8/8/4K3 b - - 0 2',
+    );
+    expect(result.animator.flights).toHaveLength(1);
+    expect(result.animator.flights[0].from).toBe(squareFromAlgebraic('e5'));
+    expect(result.animator.flights[0].to).toBe(squareFromAlgebraic('d6'));
+  });
+
+  it('glides the pawn and swaps the sprite to the promoted piece at the end', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const result = mountBoard(env.container, {
+      fen: '3k4/4P3/8/8/8/8/8/4K3 w - - 0 1',
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+    });
+    await result.spritesLoaded;
+    env.drawImage.mockClear();
+
+    clickSquare(env, 'e7');
+    clickSquare(env, 'e8');
+    promotionChoices(result)[0].click(); // queen
+    expect(result.controller.state.board[squareFromAlgebraic('e8')]).toBe(
+      PIECES.white.queen,
+    );
+
+    driver.runFrames([1]);
+    env.drawImage.mockClear();
+    // Mid-glide: the pawn sprite glides e7 (256,64) → e8 (256,0).
+    driver.runFrames([126]);
+    expect(drawnSpriteAt(env, 256, 32)).toBe(SPRITE_SOURCES.wP);
+    expect(drawnSpriteAt(env, 256, 0)).toBeUndefined(); // destination empty
+
+    // The moment the tween ends, the promoted piece's sprite is on e8.
+    env.drawImage.mockClear();
+    driver.runFrames([251]);
+    expect(drawnSpriteAt(env, 256, 0)).toBe(SPRITE_SOURCES.wQ);
+    expect(result.animator.isAnimating).toBe(false);
+  });
+
+  it('clears the animation overlay on New game', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const result = mountBoard(env.container, {
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+    });
+
+    clickSquare(env, 'e2');
+    clickSquare(env, 'e4');
+    driver.runFrames([0]);
+    expect(result.animator.isAnimating).toBe(true);
+    expect(result.animator.lastMove).not.toBeNull();
+
+    result.newGameButton.click();
+    expect(result.animator.isAnimating).toBe(false);
+    expect(result.animator.flights).toHaveLength(0);
+    expect(result.animator.lastMove).toBeNull();
+    expect(result.animator.checkSquare).toBeNull();
+  });
+});
+
+describe('mountBoard: check glow', () => {
+  it('lights the checked king square red and clears it once the evasion commits', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const result = mountBoard(env.container, {
+      fen: '4k3/8/8/8/8/8/8/5RK1 w - - 0 1',
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+    });
+    expect(result.animator.checkSquare).toBeNull();
+
+    // Rf1-e1+ delivers check: Black's king e8 glows.
+    clickSquare(env, 'f1');
+    clickSquare(env, 'e1');
+    driver.runFrames([1]);
+    expect(result.animator.checkSquare).toBe(squareFromAlgebraic('e8'));
+
+    // Let the glide finish (input unlocks), then Black evades e8-d8.
+    driver.runFrames([251]);
+    clickSquare(env, 'e8');
+    clickSquare(env, 'd8');
+    driver.runFrames([252]);
+    expect(result.animator.checkSquare).toBeNull();
+  });
+
+  it('glows immediately when mounting into a check position', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const result = mountBoard(env.container, {
+      fen: '4r1k1/8/8/8/8/8/8/4K3 w - - 0 1',
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+    });
+    driver.runFrames([0]);
+    expect(result.animator.checkSquare).toBe(squareFromAlgebraic('e1'));
+  });
+});
+
+describe('mountBoard: drag snap and sounds', () => {
+  const LIVE_KNIGHT_G1 = '4k3/7p/8/8/8/8/8/4K1N1 w - - 0 1';
+
+  it('snaps a drag-dropped move into place without a tween', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const result = mountBoard(env.container, {
+      fen: LIVE_KNIGHT_G1,
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+    });
+    await result.spritesLoaded;
+    env.drawImage.mockClear();
+
+    dragPiece(env, 'g1', 'e2');
+
+    // No flight: the snap leaves no tween and the knight is drawn at e2.
+    expect(result.animator.isAnimating).toBe(false);
+    expect(result.animator.lastMove).toEqual({
+      from: squareFromAlgebraic('g1'),
+      to: squareFromAlgebraic('e2'),
+    });
+    driver.runFrames([0]);
+    expect(drawnPositions(env)).toContainEqual([256, 384]); // e2 top-left
+    expect(drawnPositions(env)).not.toContainEqual([384, 448]); // g1
+  });
+
+  it('plays the move sound on a click-committed move, never on selection', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const moveSound = vi.fn();
+    const captureSound = vi.fn();
+    mountBoard(env.container, {
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+      sound: { move: moveSound, capture: captureSound },
+    });
+
+    clickSquare(env, 'e2'); // selection only — silent
+    expect(moveSound).not.toHaveBeenCalled();
+    expect(captureSound).not.toHaveBeenCalled();
+
+    clickSquare(env, 'e4'); // commit — move sound
+    expect(moveSound).toHaveBeenCalledTimes(1);
+    expect(captureSound).not.toHaveBeenCalled();
+  });
+
+  it('plays the capture sound when the committed move captures', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const moveSound = vi.fn();
+    const captureSound = vi.fn();
+    mountBoard(env.container, {
+      fen: '4k3/8/8/8/8/3p4/4P3/4K3 w - - 0 1',
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+      sound: { move: moveSound, capture: captureSound },
+    });
+
+    clickSquare(env, 'e2');
+    clickSquare(env, 'd3');
+    expect(captureSound).toHaveBeenCalledTimes(1);
+    expect(moveSound).not.toHaveBeenCalled();
+  });
+
+  it('plays the correct sound on a drag-dropped snap move', async () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const moveSound = vi.fn();
+    const captureSound = vi.fn();
+    mountBoard(env.container, {
+      fen: LIVE_KNIGHT_G1,
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+      sound: { move: moveSound, capture: captureSound },
+    });
+
+    dragPiece(env, 'g1', 'e2');
+    expect(moveSound).toHaveBeenCalledTimes(1);
+    expect(captureSound).not.toHaveBeenCalled();
   });
 });
