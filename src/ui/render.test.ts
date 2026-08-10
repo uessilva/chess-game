@@ -8,7 +8,15 @@ import {
   squareFromAlgebraic,
 } from '../core';
 import { pieceLayout } from './pieceLayout';
-import { DARK_SQUARE_COLOR, LIGHT_SQUARE_COLOR, renderBoard } from './render';
+import {
+  DARK_SQUARE_COLOR,
+  LIGHT_SQUARE_COLOR,
+  MOVE_DOT_COLOR,
+  MOVE_DOT_RADIUS_FACTOR,
+  renderBoard,
+  renderSelection,
+  SELECTION_COLOR,
+} from './render';
 import { SPRITE_KEYS } from './sprites';
 import type { SpriteMap } from './sprites';
 
@@ -157,3 +165,106 @@ function squareTopLeft(algebraic: string): { x: number; y: number } {
   const sq = squareFromAlgebraic(algebraic);
   return { x: fileOf(sq) * 64, y: (7 - rankOf(sq)) * 64 };
 }
+
+/** Canvas fake extended with the path API renderSelection uses. */
+function createOverlayFakeCtx(): {
+  ctx: CanvasRenderingContext2D;
+  fillStyleSeq: string[];
+  fillRect: ReturnType<typeof vi.fn>;
+  beginPath: ReturnType<typeof vi.fn>;
+  moveTo: ReturnType<typeof vi.fn>;
+  arc: ReturnType<typeof vi.fn>;
+  fill: ReturnType<typeof vi.fn>;
+} {
+  const fillStyleSeq: string[] = [];
+  let currentFillStyle = '';
+  const fillRect = vi.fn();
+  const beginPath = vi.fn();
+  const moveTo = vi.fn();
+  const arc = vi.fn();
+  const fill = vi.fn();
+  const ctx = {
+    get fillStyle() {
+      return currentFillStyle;
+    },
+    set fillStyle(value: string) {
+      currentFillStyle = value;
+      fillStyleSeq.push(value);
+    },
+    fillRect,
+    beginPath,
+    moveTo,
+    arc,
+    fill,
+  } as unknown as CanvasRenderingContext2D;
+  return { ctx, fillStyleSeq, fillRect, beginPath, moveTo, arc, fill };
+}
+
+describe('renderSelection', () => {
+  it('draws nothing for a null selection', () => {
+    const { ctx, fillRect, beginPath, fill } = createOverlayFakeCtx();
+    renderSelection(ctx, null, { squareSize: 64 });
+    expect(fillRect).not.toHaveBeenCalled();
+    expect(beginPath).not.toHaveBeenCalled();
+    expect(fill).not.toHaveBeenCalled();
+  });
+
+  it('tints the selected square and draws one dot per target', () => {
+    const { ctx, fillStyleSeq, fillRect, beginPath, moveTo, arc, fill } =
+      createOverlayFakeCtx();
+    const selection = {
+      from: squareFromAlgebraic('e2'),
+      targets: [squareFromAlgebraic('e3'), squareFromAlgebraic('e4')],
+    };
+
+    renderSelection(ctx, selection, { squareSize: 64 });
+
+    // Selection tint over e2 (256, 384).
+    expect(fillStyleSeq).toEqual([SELECTION_COLOR, MOVE_DOT_COLOR]);
+    expect(fillRect).toHaveBeenCalledTimes(1);
+    expect(fillRect).toHaveBeenCalledWith(256, 384, 64, 64);
+
+    // One dot per target, centered on the square.
+    const radius = 64 * MOVE_DOT_RADIUS_FACTOR;
+    expect(beginPath).toHaveBeenCalledTimes(1);
+    expect(arc).toHaveBeenCalledTimes(2);
+    expect(arc).toHaveBeenCalledWith(288, 352, radius, 0, Math.PI * 2); // e3
+    expect(arc).toHaveBeenCalledWith(288, 288, radius, 0, Math.PI * 2); // e4
+    expect(fill).toHaveBeenCalledTimes(1);
+    // moveTo hops each circle's start point so arcs stay disjoint.
+    expect(moveTo).toHaveBeenCalledWith(288 + radius, 352);
+    expect(moveTo).toHaveBeenCalledWith(288 + radius, 288);
+  });
+
+  it('mirrors the overlay for the black orientation', () => {
+    const { ctx, fillRect, arc } = createOverlayFakeCtx();
+    const selection = {
+      from: squareFromAlgebraic('e2'),
+      targets: [squareFromAlgebraic('e3')],
+    };
+
+    renderSelection(ctx, selection, { squareSize: 64, orientation: 'black' });
+
+    // e2 maps to the mirrored position (3, 1) -> x=(7-4)*64=192, y=1*64=64.
+    expect(fillRect).toHaveBeenCalledWith(192, 64, 64, 64);
+    // e3 target center mirrors to x=(7-4)*64+32=224, y=2*64+32=160.
+    expect(arc).toHaveBeenCalledWith(
+      224,
+      160,
+      64 * MOVE_DOT_RADIUS_FACTOR,
+      0,
+      Math.PI * 2,
+    );
+  });
+
+  it('draws nothing for a selection with no targets (only the tint)', () => {
+    const { ctx, fillRect, arc } = createOverlayFakeCtx();
+    renderSelection(
+      ctx,
+      { from: squareFromAlgebraic('a1'), targets: [] },
+      { squareSize: 64 },
+    );
+    expect(fillRect).toHaveBeenCalledTimes(1);
+    expect(arc).not.toHaveBeenCalled();
+  });
+});
