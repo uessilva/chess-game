@@ -15,6 +15,17 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   timeout: 60_000,
+  expect: {
+    toHaveScreenshot: {
+      // Absorbs font-antialiasing variance of the unstyled DOM text (status
+      // line, game-over banner) between Ubuntu builds — observed ~0.4% of
+      // pixels on a cross-machine run while the canvas is pixel-identical.
+      // Any real board-level rendering change (a recolored square, a moved
+      // sprite, a dropped highlight) shifts far more than 1% of pixels, so
+      // the gate still fails loudly on genuine drift.
+      maxDiffPixelRatio: 0.01,
+    },
+  },
   use: {
     baseURL: 'http://localhost:4173',
     browserName: 'chromium',
