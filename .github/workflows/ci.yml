@@ -30,7 +30,31 @@ jobs:
       - run: npm test
       - run: npm run test:coverage
       - run: npm run build
+      - run: npm run check:bundle
       - run: npm run check:modules
       - name: Validate commit messages
         if: github.event_name == 'pull_request'
         run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }}
+
+  # Visual regression (task 2.6): committed Playwright baselines compared
+  # against the production build. Own job so the browser install doesn't slow
+  # the main gate; failure artifacts (screenshots + pixel diffs) are
+  # uploaded from test-results/.
+  visual:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:visual
+      - name: Upload visual test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results/
+          retention-days: 7
