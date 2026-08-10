@@ -244,9 +244,11 @@ check`.
   (`- [ ]` → `- [x]`).
 - Never merge without tester review and green CI, even for "simple" changes.
 - Every task gets its own PR, kept small. One issue per PR.
-- Agents post issue comments via `gh`, not the orchestrator. Launch the
+- Agents post comments via `gh`, not the orchestrator. Launch the
   relevant agent (PM for acceptance, tester for verdicts) and let it write the
-  comment.
+  comment. The tester's QA verdict (PASS or detailed findings) is always
+  published as a comment **on the PR**; the PM's accept/reject also goes on the
+  PR. Issue comments are for grooming notes and acceptance-criteria updates.
 - Run `npm run check` before opening any PR — it mirrors CI.
 
 ### Red CI is never "chronically red" — always fix it
