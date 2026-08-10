@@ -137,30 +137,37 @@ gh issue edit {NUMBER} --body "..."
 
 Change `- [ ]` to `- [x]` for criteria you've verified as passing. Leave `- [ ]` for failures.
 
-### 6. Write Report to the Issue
+### 6. Publish Verdict as a Comment on the PR
 
-Post a detailed comment on the GitHub issue with your findings:
+Post a detailed comment **on the PR** (not the issue) explaining whether the code passed or detailing the issues found. This comment is the QA gate — the PM and orchestrator read it before accepting/merging.
 
 ```bash
-gh issue comment {NUMBER} --body "$(cat <<'COMMENT'
-## QA Review
+gh pr comment {PR} --body "$(cat <<'COMMENT'
+## QA Review for #{issue-number}
+
+### Verdict: PASS / FAIL
 
 ### Test Summary
 - Focused tests: X passed / Y failed
 - Perft: {depth, position, expected vs actual}
 - npm run check: {pass/fail}
+- PR CI: {pass/fail}
 
 ### Acceptance Criteria
 - [x] PASS: ...
 - [ ] FAIL: ...
 
 ### Issues Found
-- ...
+- {detailed list, or "None" on PASS}
 
-### Verdict: PASS / FAIL
+### Re-review
+- {required for FAIL — the engineer fixes, you re-run, then re-comment}
 COMMENT
 )"
 ```
+
+- **PASS**: the comment must confirm every acceptance criterion met and CI green.
+- **FAIL**: the comment must list each issue in detail — what's wrong, what was expected (reference the acceptance criteria or perft oracle), and how to fix it. After the engineer pushes fixes, re-review (step 9) and post an updated comment.
 
 ### 7. Screenshots
 
