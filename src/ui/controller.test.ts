@@ -158,7 +158,7 @@ describe('createController: executing moves', () => {
     expect(controller.state.turn).toBe('black');
   });
 
-  it('promotes to a queen by default when the back-rank target is clicked', () => {
+  it('holds a promotion pending instead of executing when the back-rank target is clicked', () => {
     // Pawn on a7 (second FEN field is rank 7); the issue's `4k3/8/P7/...`
     // FEN puts the pawn on a6 and never reaches the last rank.
     const controller = createController(
@@ -171,9 +171,175 @@ describe('createController: executing moves', () => {
 
     controller.handleSquareClick(sq('a8'));
 
-    expect(controller.state.board[sq('a8')]).toBe(PIECES.white.queen);
+    // Supersedes #11's default-queen: the move is held, never applied.
+    expect(controller.pendingPromotion).toEqual({
+      from: sq('a7'),
+      to: sq('a8'),
+      color: 'white',
+    });
+    expect(controller.state.board[sq('a8')]).toBeNull();
+    expect(controller.state.board[sq('a7')]).toBe(PIECES.white.pawn);
+    expect(controller.state.turn).toBe('white');
+  });
+});
+
+describe('createController: promotion picker', () => {
+  it('applies exactly the chosen promotion piece via makeMove', () => {
+    const controller = createController(
+      parseFen('4k3/P7/8/8/8/8/8/4K3 w - - 0 1'),
+    );
+    controller.handleSquareClick(sq('a7'));
+    controller.handleSquareClick(sq('a8'));
+
+    controller.choosePromotion('knight');
+
+    expect(controller.state.board[sq('a8')]).toBe(PIECES.white.knight);
     expect(controller.state.board[sq('a7')]).toBeNull();
     expect(controller.state.turn).toBe('black');
+    expect(controller.pendingPromotion).toBeNull();
+    expect(controller.selection).toBeNull();
+  });
+
+  it('supports holding a promotion from a drag drop (holdPromotion)', () => {
+    const controller = createController(
+      parseFen('4k3/P7/8/8/8/8/8/4K3 w - - 0 1'),
+    );
+
+    controller.holdPromotion(sq('a7'), sq('a8'));
+
+    expect(controller.pendingPromotion).toEqual({
+      from: sq('a7'),
+      to: sq('a8'),
+      color: 'white',
+    });
+    expect(controller.state.board[sq('a7')]).toBe(PIECES.white.pawn);
+    expect(controller.state.turn).toBe('white');
+
+    controller.choosePromotion('rook');
+    expect(controller.state.board[sq('a8')]).toBe(PIECES.white.rook);
+    expect(controller.state.turn).toBe('black');
+  });
+
+  it('ignores holdPromotion for a pair with no legal promotion variants', () => {
+    const controller = createController(parseFen(START_FEN));
+
+    controller.holdPromotion(sq('e2'), sq('e4'));
+
+    expect(controller.pendingPromotion).toBeNull();
+  });
+
+  it('cancels the pending promotion without applying a move and play resumes', () => {
+    const controller = createController(
+      parseFen('4k3/P7/8/8/8/8/8/4K3 w - - 0 1'),
+    );
+    const before = toFen(controller.state);
+
+    controller.handleSquareClick(sq('a7'));
+    controller.handleSquareClick(sq('a8'));
+    controller.cancelPromotion();
+
+    expect(controller.pendingPromotion).toBeNull();
+    expect(controller.selection).toBeNull();
+    expect(controller.state.board[sq('a7')]).toBe(PIECES.white.pawn);
+    expect(controller.state.turn).toBe('white');
+    expect(toFen(controller.state)).toBe(before);
+
+    // Play continues: the pawn can be re-selected and promoted later.
+    controller.handleSquareClick(sq('a7'));
+    expect(controller.selection?.from).toBe(sq('a7'));
+    expect(targets(controller.selection)).toEqual([sq('a8')]);
+  });
+
+  it('freezes board clicks while the picker is open', () => {
+    const controller = createController(
+      parseFen('4k3/P7/8/8/8/8/8/4K3 w - - 0 1'),
+    );
+    const before = toFen(controller.state);
+    controller.handleSquareClick(sq('a7'));
+    controller.handleSquareClick(sq('a8'));
+    expect(controller.pendingPromotion).not.toBeNull();
+
+    // Own piece, empty square: nothing moves and selection never changes.
+    controller.handleSquareClick(sq('a7'));
+    controller.handleSquareClick(sq('e5'));
+    controller.handleSquareClick(sq('e1'));
+
+    expect(controller.selection).toBeNull();
+    expect(controller.pendingPromotion).not.toBeNull();
+    expect(toFen(controller.state)).toBe(before);
+  });
+
+  it('is a no-op when choosing a piece with no pending promotion', () => {
+    const controller = createController(
+      parseFen('4k3/P7/8/8/8/8/8/4K3 w - - 0 1'),
+    );
+    const before = toFen(controller.state);
+
+    controller.choosePromotion('queen');
+
+    expect(toFen(controller.state)).toBe(before);
+    expect(controller.state.turn).toBe('white');
+  });
+});
+
+describe('createController: game-over freeze', () => {
+  it('selects nothing in a game ended by the fifty-move rule', () => {
+    const controller = createController(
+      parseFen('4k3/8/8/8/8/8/8/4K3 b - - 100 75'),
+    );
+    const before = toFen(controller.state);
+
+    controller.handleSquareClick(sq('e8'));
+    controller.handleSquareClick(sq('e7'));
+
+    expect(controller.selection).toBeNull();
+    expect(toFen(controller.state)).toBe(before);
+    expect(controller.state.turn).toBe('black');
+  });
+
+  it('selects nothing in a game ended by insufficient material', () => {
+    const controller = createController(
+      parseFen('4k3/8/8/8/8/8/8/4K3 b - - 0 1'),
+    );
+    const before = toFen(controller.state);
+
+    controller.handleSquareClick(sq('e8'));
+
+    expect(controller.selection).toBeNull();
+    expect(toFen(controller.state)).toBe(before);
+  });
+});
+
+describe('createController: reset (New game)', () => {
+  it('resets the shared state object to the starting position and clears UI state', () => {
+    const state = parseFen('4k3/P7/8/8/8/8/8/4K3 w - - 0 1');
+    const controller = createController(state);
+    controller.handleSquareClick(sq('a7'));
+    controller.handleSquareClick(sq('a8'));
+    expect(controller.pendingPromotion).not.toBeNull();
+
+    controller.reset();
+
+    expect(controller.state).toBe(state); // same object the drag machine holds
+    expect(controller.pendingPromotion).toBeNull();
+    expect(controller.selection).toBeNull();
+    expect(controller.state.turn).toBe('white');
+    expect(toFen(controller.state)).toBe(
+      'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+    );
+  });
+
+  it('resets a mid-game position and lets play continue from the start', () => {
+    const controller = createController(parseFen(START_FEN));
+    controller.handleSquareClick(sq('e2'));
+    controller.handleSquareClick(sq('e4'));
+    expect(controller.state.turn).toBe('black');
+
+    controller.reset();
+
+    expect(controller.state.turn).toBe('white');
+    controller.handleSquareClick(sq('e2'));
+    expect(targets(controller.selection)).toEqual([sq('e3'), sq('e4')]);
   });
 });
 

@@ -1,17 +1,26 @@
 import { parseFen, START_FEN } from './core';
-import type { Square } from './core';
+import type { Color, PieceType, Square } from './core';
 import {
   DEFAULT_SQUARE_SIZE,
   pixelToSquare,
   preloadSprites,
   renderBoard,
   renderSelection,
+  SPRITE_SOURCES,
+  spriteKeyFor,
 } from './ui';
 import type { BoardOrientation, Point, SpriteMap } from './ui';
-import { createController, turnLabel } from './ui/controller';
+import { createController } from './ui/controller';
 import type { Controller } from './ui/controller';
 import { createDragMachine } from './ui/drag';
 import type { GestureResolution } from './ui/drag';
+import {
+  deriveGameStatus,
+  gameOverLabel,
+  isTerminal,
+  statusLineLabel,
+} from './ui/gameStatus';
+import type { GameStatus } from './ui/gameStatus';
 
 export interface BoardMountResult {
   readonly canvas: HTMLCanvasElement;
@@ -20,10 +29,27 @@ export interface BoardMountResult {
   readonly spritesLoaded: Promise<void>;
   /** Click-to-move controller driving the board's core state. */
   readonly controller: Controller;
-  /** Status line element showing whose turn it is. */
+  /** Status line element showing whose turn it is (plus the "Check!" marker). */
   readonly statusLine: HTMLElement;
+  /** Game-over banner: result and reason, visible only when the game is over. */
+  readonly banner: HTMLElement;
+  /** "New game" control: resets core and every piece of UI state. */
+  readonly newGameButton: HTMLElement;
+  /** Promotion picker: Q/R/B/N in the mover's color, visible while a promotion is pending. */
+  readonly picker: HTMLElement;
   /** Stop the rAF game loop and detach the pointer listeners. */
   readonly stop: () => void;
+}
+
+/**
+ * A promotion picker button: which piece it commits and in whose color.
+ * The sprite `<img>` inside swaps src with the mover's color each time the
+ * picker opens.
+ */
+export interface PromotionChoiceButton extends HTMLButtonElement {
+  pieceType: PieceType;
+  color: Color;
+  pieceImage: HTMLImageElement;
 }
 
 export interface BoardMountOptions {
@@ -39,16 +65,17 @@ export interface BoardMountOptions {
 /**
  * Mount a playable two-player board into `container` rendering `START_FEN`
  * (or `options.fen`). A rAF-driven game loop owns the frame cadence: each
- * frame computes delta time, runs an **update** phase that refreshes the
- * status line, then a **render** phase that draws the core state plus the
- * selection overlay and any lifted drag piece. Pointer events are translated
- * to the drag state machine (page coords → canvas pixels via the bounding
- * rect → `pixelToSquare`), which resolves each gesture as either a #11 click
- * (delegated to the controller) or a drag (applied through the same
+ * frame computes delta time, runs an **update** phase (status refreshes on
+ * move commit — see syncUi), then a **render** phase that draws the core
+ * state plus the selection overlay and any lifted drag piece. Pointer events
+ * are translated to the drag state machine (page coords → canvas pixels via
+ * the bounding rect → `pixelToSquare`), which resolves each gesture as
+ * either a #11 click (delegated to the controller), a promotion drop (held
+ * in UI state so the picker opens), or a drag (applied through the same
  * `makeMove` path when legal, reverted otherwise). Core state changes only
  * through the controller and drag machine — the board always reflects (core
- * state, selection, drag). Delta time is threaded through the phases for
- * #14's animations to consume.
+ * state, selection, drag, game status). Delta time is threaded through the
+ * phases for #14's animations to consume.
  */
 export function mountBoard(
   container: HTMLElement,
@@ -79,8 +106,74 @@ export function mountBoard(
 
   const statusLine = document.createElement('div');
   statusLine.className = 'status-line';
-  statusLine.textContent = turnLabel(state.turn);
   container.appendChild(statusLine);
+
+  const banner = document.createElement('div');
+  banner.className = 'game-over-banner';
+  banner.hidden = true;
+  container.appendChild(banner);
+
+  const newGameButton = document.createElement('button');
+  newGameButton.className = 'new-game';
+  newGameButton.textContent = 'New game';
+  container.appendChild(newGameButton);
+
+  // Promotion picker: four piece choices in the moving side's color. The
+  // buttons are built once; syncPicker swaps each sprite's src to the
+  // mover's color whenever the picker opens.
+  const picker = document.createElement('div');
+  picker.className = 'promotion-picker';
+  picker.hidden = true;
+  container.appendChild(picker);
+
+  const PROMOTION_CHOICES = ['queen', 'rook', 'bishop', 'knight'] as const;
+  const pickerButtons: PromotionChoiceButton[] = PROMOTION_CHOICES.map(
+    (pieceType) => {
+      const button = document.createElement('button') as PromotionChoiceButton;
+      button.className = 'promotion-choice';
+      button.pieceType = pieceType;
+      button.color = 'white';
+      const pieceImage = document.createElement('img');
+      button.appendChild(pieceImage);
+      button.pieceImage = pieceImage;
+      picker.appendChild(button);
+      button.addEventListener('click', () => {
+        controller.choosePromotion(pieceType);
+        syncUi();
+      });
+      return button;
+    },
+  );
+
+  // Game status is re-derived on every move commit and on New game — status
+  // only changes at those points (spec 2.4), so the loop never re-derives
+  // per frame.
+  let status: GameStatus = deriveGameStatus(state);
+
+  const syncPicker = (): void => {
+    const pending = controller.pendingPromotion;
+    picker.hidden = pending === null;
+    if (pending === null) {
+      return;
+    }
+    for (const button of pickerButtons) {
+      button.color = pending.color;
+      button.pieceImage.src =
+        SPRITE_SOURCES[
+          spriteKeyFor({ color: pending.color, type: button.pieceType })
+        ];
+    }
+  };
+
+  const syncUi = (): void => {
+    status = deriveGameStatus(state);
+    statusLine.textContent = statusLineLabel(status, state.turn);
+    const over = isTerminal(status);
+    banner.hidden = !over;
+    banner.textContent = over ? (gameOverLabel(status) ?? '') : '';
+    syncPicker();
+  };
+  syncUi();
 
   const emptySprites: SpriteMap = {};
   let currentSprites: SpriteMap = emptySprites;
@@ -125,13 +218,30 @@ export function mountBoard(
     if (resolution.kind === 'click') {
       // Within the click/drag threshold: #11's click flow runs unchanged.
       controller.handleSquareClick(resolution.square);
+    } else if (resolution.kind === 'promotion') {
+      // A drop that only resolves to promotion variants: hold the move in
+      // UI state and open the picker (supersedes #12's silent no-op).
+      controller.holdPromotion(resolution.from, resolution.to);
     } else {
       // A completed drag (move applied or reverted) supersedes the click UI.
       controller.clearSelection();
     }
+    syncUi();
   };
 
   const onPointerDown = (event: PointerEvent): void => {
+    if (controller.pendingPromotion !== null) {
+      // Clicking outside the open picker cancels the pending promotion; the
+      // click itself never starts a gesture or changes selection.
+      controller.cancelPromotion();
+      syncUi();
+      return;
+    }
+    if (isTerminal(status)) {
+      // Game over: the board is frozen — the only active control is
+      // New game.
+      return;
+    }
     const { x, y } = toCanvasPoint(event);
     // Grabbing capture keeps the pointer stream flowing to the canvas even
     // when the pointer leaves it mid-drag.
@@ -163,12 +273,28 @@ export function mountBoard(
       controller.clearSelection();
     }
   };
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape' && controller.pendingPromotion !== null) {
+      controller.cancelPromotion();
+      syncUi();
+    }
+  };
+  const onNewGame = (): void => {
+    if (drag.drag !== null) {
+      drag.pointerCancel(); // abort any in-flight lift: piece reverts, no move
+    }
+    // No confirmation dialog — immediate reset for casual local play.
+    controller.reset();
+    syncUi();
+  };
+  newGameButton.addEventListener('click', onNewGame);
 
   canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointermove', onPointerMove);
   canvas.addEventListener('pointerup', onPointerUp);
   canvas.addEventListener('pointercancel', onPointerCancel);
   canvas.addEventListener('lostpointercapture', onLostPointerCapture);
+  document.addEventListener('keydown', onKeyDown);
 
   // Game loop: rAF-driven with update/render separation.
   const scheduleFrame =
@@ -185,9 +311,10 @@ export function mountBoard(
   let lastTime = 0;
 
   const update = (delta: number): void => {
-    // delta is threaded through for #14's animations; 2.3 refreshes the turn.
+    // Game status is re-derived on move commit (syncUi), so nothing
+    // per-frame needs refreshing here; delta is threaded through for #14's
+    // animations.
     void delta;
-    statusLine.textContent = turnLabel(state.turn);
   };
 
   const frame = (time: number): void => {
@@ -210,6 +337,9 @@ export function mountBoard(
     spritesLoaded,
     controller,
     statusLine,
+    banner,
+    newGameButton,
+    picker,
     stop: () => {
       if (frameId !== null) {
         cancelFrame(frameId);
@@ -220,6 +350,7 @@ export function mountBoard(
       canvas.removeEventListener('pointerup', onPointerUp);
       canvas.removeEventListener('pointercancel', onPointerCancel);
       canvas.removeEventListener('lostpointercapture', onLostPointerCapture);
+      document.removeEventListener('keydown', onKeyDown);
     },
   };
 }

@@ -217,7 +217,7 @@ describe('createDragMachine: drop resolution', () => {
     expect(toFen(state)).toBe(before);
   });
 
-  it('does not silently promote: a last-rank drop reverts and leaves core unchanged', () => {
+  it('resolves a last-rank drop as a promotion for the picker: no move applied', () => {
     const { machine, state } = createMachine('4k3/P7/8/8/8/8/8/4K3 w - - 0 1');
     const before = toFen(state);
 
@@ -225,8 +225,13 @@ describe('createDragMachine: drop resolution', () => {
     machine.pointerMove(center('a8').x, center('a8').y);
 
     expect(machine.pointerUp(center('a8').x, center('a8').y)).toEqual({
-      kind: 'drag-revert',
+      kind: 'promotion',
+      from: sq('a7'),
+      to: sq('a8'),
     });
+    // The pawn stays on its origin square and the turn never passes — the
+    // caller holds the move in UI state and opens the picker (#13).
+    expect(machine.drag).toBeNull();
     expect(state.board[sq('a8')]).toBeNull();
     expect(state.board[sq('a7')]).toBe(PIECES.white.pawn);
     expect(state.turn).toBe('white');
