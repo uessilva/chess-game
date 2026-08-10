@@ -8,6 +8,13 @@ import type { Locator, Page } from '@playwright/test';
  * end to end. Baselines live in `app.spec.ts-snapshots/` next to this file;
  * regenerate intentionally changed captures with
  * `npx playwright test --update-snapshots`.
+ *
+ * The pixel comparison captures the board canvas only (512x512) — text
+ * (status line, game-over banner) is asserted semantically via `toHaveText`
+ * because it is the only font-AA-noisy part of the page. A canvas-only frame
+ * is pixel-identical across machines and keeps the diff tight enough that a
+ * single 64x64 square recolor (4,096 px = 1.56% of the frame) fails the gate
+ * (see `maxDiffPixelRatio` in playwright.config.ts).
  */
 
 const SQUARE_SIZE = 64;
@@ -89,7 +96,7 @@ async function playMove(
 test('initial position is pixel-locked', async ({ page }) => {
   await loadApp(page);
   await expect(page.locator('.status-line')).toHaveText('White to move');
-  await expect(page.locator('#app')).toHaveScreenshot('initial.png');
+  await expect(page.locator('canvas')).toHaveScreenshot('initial.png');
 });
 
 test('mid-game after 1.e4 e5 2.Nf3 Nc6 is pixel-locked', async ({ page }) => {
@@ -100,7 +107,7 @@ test('mid-game after 1.e4 e5 2.Nf3 Nc6 is pixel-locked', async ({ page }) => {
     await playMove(page, origin, move);
   }
   await expect(page.locator('.status-line')).toHaveText('White to move');
-  await expect(page.locator('#app')).toHaveScreenshot('mid-game.png');
+  await expect(page.locator('canvas')).toHaveScreenshot('mid-game.png');
 });
 
 test('checkmate ends the game and the game-over screen is pixel-locked', async ({
@@ -115,5 +122,5 @@ test('checkmate ends the game and the game-over screen is pixel-locked', async (
   await expect(page.locator('.game-over-banner')).toHaveText(
     'Checkmate — White wins',
   );
-  await expect(page.locator('#app')).toHaveScreenshot('game-over.png');
+  await expect(page.locator('canvas')).toHaveScreenshot('game-over.png');
 });

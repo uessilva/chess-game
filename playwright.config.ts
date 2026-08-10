@@ -17,13 +17,14 @@ export default defineConfig({
   timeout: 60_000,
   expect: {
     toHaveScreenshot: {
-      // Absorbs font-antialiasing variance of the unstyled DOM text (status
-      // line, game-over banner) between Ubuntu builds — observed ~0.4% of
-      // pixels on a cross-machine run while the canvas is pixel-identical.
-      // Any real board-level rendering change (a recolored square, a moved
-      // sprite, a dropped highlight) shifts far more than 1% of pixels, so
-      // the gate still fails loudly on genuine drift.
-      maxDiffPixelRatio: 0.01,
+      // The pixel comparison covers the board canvas only (512x512 = 262,144
+      // px); text is asserted semantically via `toHaveText`, so there is no
+      // font-AA variance to absorb. A tiny 0.1% allowance (262 px) stays as a
+      // safety net against rare canvas sub-pixel jitter while keeping the gate
+      // sharp: a single recolored 64x64 square = 4,096 px = 1.56% of the
+      // frame, ~15.6x over the threshold, so the spec's canonical "wrong
+      // square color" break fails loudly with a pixel-diff artifact.
+      maxDiffPixelRatio: 0.001,
     },
   },
   use: {
