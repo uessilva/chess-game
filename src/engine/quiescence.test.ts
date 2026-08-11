@@ -15,7 +15,7 @@ import { MoveFlags } from '../core/types';
 import { evaluate } from './eval';
 import { searchWithTime } from './iterativeDeepening';
 import { quiescenceSearch } from './quiescence';
-import { MATE_SCORE, search } from './search';
+import { MATE_SCORE, scoreFromTT, search, SearchTimeoutError } from './search';
 import { TranspositionTable } from './transpositionTable';
 
 /**
@@ -299,6 +299,125 @@ describe('Scenario 8: time budget is respected through qsearch', () => {
       search(state, 1, undefined, { qsearch: true }).move,
     );
     expect(state).toEqual(parseFen(MATE_CAPTURE_FEN));
+  });
+});
+
+describe('abort handling in the search.ts integration (PM regression)', () => {
+  it('an aborted qsearch stores nothing to the TT: no truncated depth-0 exact entry', () => {
+    const state = parseFen(HANGING_QUEEN_FEN);
+    const tt = new TranspositionTable();
+    // fireAfter=7 from the PM's repro: the deadline fires inside the first
+    // depth-0 node's qsearch. This used to store the truncated 95 for a
+    // child whose true qsearch value is 1000 (bound 'exact', depth 0),
+    // poisoning later probes. The depth-0 branch must throw instead.
+    let calls = 0;
+    expect(() =>
+      search(state, 1, undefined, {
+        qsearch: true,
+        tt,
+        shouldAbort: () => ++calls > 7,
+      }),
+    ).toThrow(SearchTimeoutError);
+    // After the aborted search, every depth-0 child entry still in the TT
+    // must be a fully resolved value — verified against an independent,
+    // unaborted qsearch of the same position.
+    for (const move of generateLegalMoves(state)) {
+      makeMove(state, move);
+      const entry = tt.probe(state.zobristKey, 0);
+      if (entry !== null) {
+        const trueScore = quiescenceSearch(state, -Infinity, Infinity).score;
+        // Children of a depth-1 root sit at ply 1, so table coordinates
+        // are converted back at ply 1 (identity for centipawn scores).
+        expect(
+          scoreFromTT(entry.score, 1),
+          `child ${move.from}->${move.to}`,
+        ).toBe(trueScore);
+      }
+      unmakeMove(state);
+    }
+  });
+
+  it("an abort inside the LAST root move's qsearch still aborts the iteration", () => {
+    const state = parseFen(HANGING_QUEEN_FEN);
+    // Measure how many deadline checks a full, unaborted run performs…
+    let calls = 0;
+    search(state, 1, undefined, {
+      qsearch: true,
+      shouldAbort: () => {
+        calls++;
+        return false;
+      },
+    });
+    const total = calls;
+    expect(total).toBeGreaterThan(1);
+    // …then fire the deadline on the very LAST check — inside the last
+    // root move's qsearch. The search must abort the whole iteration, not
+    // complete normally with a truncated score (the clean-stop guarantee).
+    calls = 0;
+    expect(() =>
+      search(state, 1, undefined, {
+        qsearch: true,
+        shouldAbort: () => ++calls > total - 1,
+      }),
+    ).toThrow(SearchTimeoutError);
+    expect(calls).toBe(total);
+  });
+
+  it("searchWithTime falls back to the last completed depth when the abort lands in the last root move's qsearch", () => {
+    const state = parseFen(HANGING_QUEEN_FEN);
+    // Measure the clock-call pattern of a full maxDepth-2 qsearch run.
+    let total = 0;
+    searchWithTime(state, {
+      timeMs: 1_000_000,
+      maxDepth: 2,
+      qsearch: true,
+      now: () => {
+        total++;
+        return 0;
+      },
+    });
+    // Call 1 = start, call 2 = elapsed after depth 1, the depth-2
+    // iteration's deadline checks follow, and the final call is the
+    // elapsed check after depth 2. So call (total - 1) is the last
+    // deadline check of the depth-2 iteration — inside the last root
+    // move's qsearch. Expiring there must abandon the whole iteration.
+    let calls = 0;
+    const result = searchWithTime(state, {
+      timeMs: 500,
+      maxDepth: 2,
+      qsearch: true,
+      now: () => (++calls === total - 1 ? 1_000 : 0),
+    });
+    expect(result.depth).toBe(1);
+    expect(result.move).toEqual(
+      search(state, 1, undefined, { qsearch: true }).move,
+    );
+  });
+});
+
+describe('depth-0 root with qsearch', () => {
+  it('search(state, 0, { qsearch: true }) extends the depth-0 horizon at the root too', () => {
+    const state = parseFen(HANGING_QUEEN_FEN);
+    const raw = search(state, 0, undefined, { qsearch: false });
+    const resolved = search(state, 0, undefined, { qsearch: true });
+    expect(raw.move).toBeNull();
+    expect(resolved.move).toBeNull();
+    // Without qsearch the score is the raw static evaluation; with it the
+    // position's tactics are resolved (matching a standalone qsearch).
+    expect(raw.score).toBe(evaluate(state));
+    const standalone = quiescenceSearch(state, -Infinity, Infinity);
+    expect(resolved.score).toBe(standalone.score);
+    expect(resolved.nodes).toBe(standalone.nodes);
+  });
+
+  it('an abort inside the depth-0 root qsearch throws SearchTimeoutError', () => {
+    let calls = 0;
+    expect(() =>
+      search(parseFen(HANGING_QUEEN_FEN), 0, undefined, {
+        qsearch: true,
+        shouldAbort: () => ++calls > 0,
+      }),
+    ).toThrow(SearchTimeoutError);
   });
 });
 

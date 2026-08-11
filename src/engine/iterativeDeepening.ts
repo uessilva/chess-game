@@ -62,7 +62,10 @@ export interface TimeSearchOptions {
    * horizon with the quiescence search instead of the raw static
    * evaluation (see SearchOptions.qsearch). The stop flag is passed into
    * qsearch, so an expiring budget also truncates an in-flight capture
-   * chain. Defaults to false, preserving the pre-qsearch behavior exactly.
+   * chain — and the clean-stop guarantee still holds: an abort inside any
+   * qsearch node aborts the whole iteration, so a truncated capture-chain
+   * value never surfaces as a completed iteration's score. Defaults to
+   * false, preserving the pre-qsearch behavior exactly.
    */
   readonly qsearch?: boolean;
 }
