@@ -10,6 +10,7 @@ import { parseFen, START_FEN, toFen } from '../core/fen';
 import type { BoardState } from '../core/state';
 import type { Color, PieceType, Square } from '../core/types';
 import { PIECES } from '../core/types';
+import { zobristHash } from '../core/zobrist';
 import {
   evaluate,
   materialScore,
@@ -38,7 +39,7 @@ function stateWithPieces(
   for (const { color, type, sq } of pieces) {
     board[sq] = PIECES[color][type];
   }
-  return {
+  const state: BoardState = {
     board,
     turn: 'white',
     castling: {
@@ -52,7 +53,10 @@ function stateWithPieces(
     fullmoveNumber: 1,
     history: [],
     positionHashes: [],
+    zobristKey: 0n,
   };
+  state.zobristKey = zobristHash(state);
+  return state;
 }
 
 /** The same position with the side to move flipped (shallow copy suffices: eval reads board + turn). */

@@ -18,6 +18,8 @@ export interface UndoInfo {
   readonly prevCastling: CastlingRights;
   readonly prevEnPassant: Square | null;
   readonly prevHalfmove: number;
+  /** The pre-move zobrist key, restored exactly by unmakeMove. */
+  readonly prevZobristKey: bigint;
 }
 
 /**
@@ -36,6 +38,15 @@ export interface BoardState {
   halfmoveClock: number;
   fullmoveNumber: number;
   history: UndoInfo[];
+  /**
+   * The 64-bit Zobrist hash of the current position — always equal to
+   * `zobristHash(state)` (enforced by tests after every move). makeMove
+   * maintains it incrementally in O(1) and unmakeMove restores the exact
+   * previous key, so the engine can key every search node without
+   * rescanning the board (transposition table, task 3.5). Not serialized
+   * by toFen — position identity is derived from the FEN fields.
+   */
+  zobristKey: bigint;
   /**
    * Zobrist hashes of every position reached, current position last.
    * Seeded with the starting position by parseFen/initialState; makeMove
@@ -82,7 +93,9 @@ export function initialState(): BoardState {
     fullmoveNumber: 1,
     history: [],
     positionHashes: [],
+    zobristKey: 0n,
   };
-  state.positionHashes.push(zobristHash(state));
+  state.zobristKey = zobristHash(state);
+  state.positionHashes.push(state.zobristKey);
   return state;
 }

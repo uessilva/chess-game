@@ -4,6 +4,7 @@ import type { Move } from '../core/types';
 import { evaluate as defaultEvaluate } from './eval';
 import type { Evaluator } from './search';
 import { MATE_SCORE, search, SearchTimeoutError } from './search';
+import type { TranspositionTable } from './transpositionTable';
 
 /**
  * Iterative deepening + time management (task 3.4): wrap the fixed-depth
@@ -48,6 +49,14 @@ export interface TimeSearchOptions {
    * normal stopping condition).
    */
   readonly maxDepth?: number;
+  /**
+   * Optional transposition table (task 3.5) kept across iterations, so
+   * each deeper iteration reuses the previous ones' entries. When
+   * provided, every fixed-depth iteration probes and stores; the result
+   * (move/score) is unchanged — only node counts drop. Defaults to no
+   * TT, preserving the pre-TT behavior exactly.
+   */
+  readonly tt?: TranspositionTable | null;
 }
 
 /** What the time-budgeted search returns. */
@@ -141,7 +150,11 @@ export function searchWithTime(
     const shouldAbort = depth === 1 ? undefined : () => now() - start >= timeMs;
     let iteration;
     try {
-      iteration = search(state, depth, evaluate, { pvMove, shouldAbort });
+      iteration = search(state, depth, evaluate, {
+        pvMove,
+        shouldAbort,
+        tt: options.tt ?? null,
+      });
     } catch (error) {
       if (error instanceof SearchTimeoutError) {
         // The in-flight iteration was abandoned mid-search: count the

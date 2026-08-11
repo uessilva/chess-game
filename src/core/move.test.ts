@@ -6,6 +6,7 @@ import type { BoardState, CastlingRights } from './state';
 import { initialState } from './state';
 import type { Move, Piece, PieceType } from './types';
 import { MoveFlags, PIECES } from './types';
+import { zobristHash } from './zobrist';
 
 const NO_RIGHTS: CastlingRights = {
   whiteKingside: false,
@@ -35,11 +36,13 @@ function craftedState(
     fullmoveNumber: 1,
     history: [],
     positionHashes: [],
+    zobristKey: 0n,
     ...overrides,
   };
   for (const [alg, piece] of Object.entries(pieces)) {
     state.board[squareFromAlgebraic(alg)] = piece;
   }
+  state.zobristKey = zobristHash(state);
   return state;
 }
 

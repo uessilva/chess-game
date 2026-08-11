@@ -1,5 +1,11 @@
 import { fileOf, rankOf, square } from './board';
-import { zobristHash } from './zobrist';
+import {
+  castlingZobrist,
+  epFileZobrist,
+  meaningfulEnPassant,
+  pieceZobrist,
+  SIDE_TO_MOVE_ZOBRIST,
+} from './zobrist';
 import type { BoardState, CastlingRights, UndoInfo } from './state';
 import type { Color, Move } from './types';
 import { MoveFlags, opposite, PIECES } from './types';
@@ -65,9 +71,19 @@ function updateCastlingRights(
  * the exact prior state. No legality checks here — the move must be
  * consistent with the position (move generation, task 1.5+, guarantees
  * that). All mechanics are driven by the move's flags.
+ *
+ * The maintained `state.zobristKey` is XOR-updated incrementally to stay
+ * equal to `zobristHash(state)` (the reference implementation; the
+ * invariant is test-enforced). The outgoing meaningful en-passant square
+ * must be read before the board is mutated; the incoming one after, so
+ * both probes see the position the hash they replace/install belongs to.
  */
 export function makeMove(state: BoardState, move: Move): void {
   const mover = state.turn;
+
+  // The outgoing ep contribution belongs to the pre-move position — read
+  // it before any mutation (O(1): rank check + adjacent-pawn probe).
+  const outgoingEp = meaningfulEnPassant(state);
 
   // En passant removes the pawn beside the mover, not on the target square.
   const captureSq =
@@ -85,6 +101,7 @@ export function makeMove(state: BoardState, move: Move): void {
     prevCastling: { ...state.castling },
     prevEnPassant: state.enPassant,
     prevHalfmove: state.halfmoveClock,
+    prevZobristKey: state.zobristKey,
   };
 
   state.board[move.from] = null;
@@ -120,8 +137,46 @@ export function makeMove(state: BoardState, move: Move): void {
     state.fullmoveNumber++;
   }
   state.turn = opposite(mover);
+
+  // Maintain the key incrementally, mirroring zobristHash's identity
+  // rules exactly: the moved/captured pieces, the side-to-move bit, the
+  // changed castling rights, and the outgoing/incoming meaningful ep
+  // file. XOR is commutative, so the order below only needs to be
+  // internally consistent — the incoming ep probe reads the mutated state.
+  let key = state.zobristKey;
+  key ^= SIDE_TO_MOVE_ZOBRIST; // the side-to-move bit always flips
+  key ^= pieceZobrist(move.from, PIECES[mover][move.piece]); // mover leaves
+  if (captured !== null) {
+    key ^= pieceZobrist(captureSq, captured); // captured leaves
+  }
+  key ^= pieceZobrist(
+    move.to,
+    PIECES[mover][move.promotion ?? move.piece], // mover arrives
+  );
+  if (move.flags & MoveFlags.CASTLE_KING) {
+    const rank = rankOf(move.from);
+    key ^=
+      pieceZobrist(square(7, rank), PIECES[mover].rook) ^
+      pieceZobrist(square(5, rank), PIECES[mover].rook);
+  } else if (move.flags & MoveFlags.CASTLE_QUEEN) {
+    const rank = rankOf(move.from);
+    key ^=
+      pieceZobrist(square(0, rank), PIECES[mover].rook) ^
+      pieceZobrist(square(3, rank), PIECES[mover].rook);
+  }
+  // Rights are permanent: only the revoked ones differ between the two sets.
+  key ^= castlingZobrist(undo.prevCastling) ^ castlingZobrist(state.castling);
+  const incomingEp = meaningfulEnPassant(state);
+  if (outgoingEp !== null) {
+    key ^= epFileZobrist(fileOf(outgoingEp));
+  }
+  if (incomingEp !== null) {
+    key ^= epFileZobrist(fileOf(incomingEp));
+  }
+  state.zobristKey = key;
+
   state.history.push(undo);
-  state.positionHashes.push(zobristHash(state));
+  state.positionHashes.push(state.zobristKey);
 }
 
 /**
@@ -164,6 +219,7 @@ export function unmakeMove(state: BoardState): Move {
   state.castling = undo.prevCastling;
   state.enPassant = undo.prevEnPassant;
   state.halfmoveClock = undo.prevHalfmove;
+  state.zobristKey = undo.prevZobristKey;
   state.positionHashes.pop();
 
   return move;

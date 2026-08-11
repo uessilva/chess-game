@@ -4,6 +4,7 @@ import type { Move } from '../core/types';
 import { MoveFlags } from '../core/types';
 import { evaluate as defaultEvaluate } from './eval';
 import { MoveOrdering } from './moveOrdering';
+import type { Bound, TranspositionTable, TTMove } from './transpositionTable';
 
 /**
  * Fixed-depth negamax search with alpha-beta pruning (task 3.2).
@@ -43,6 +44,15 @@ import { MoveOrdering } from './moveOrdering';
  * exception is task 3.4's iterative-deepening PV move, which is moved
  * to the front of the root; that is still a pure permutation, so a
  * fixed-depth call without a `pvMove` behaves exactly as before.
+ *
+ * Task 3.5 (#20) adds the optional transposition table (`SearchOptions.tt`).
+ * When provided, every node probes before generating moves and stores
+ * after searching (full-key verified, depth-honoring — see
+ * transpositionTable.ts); the stored best move is tried first, feeding
+ * #18's ordering. The TT never changes the answer: at equal depth it
+ * returns the same best move and score as a no-TT search — it only finds
+ * them faster (fewer nodes). It is a strict opt-in so the default search
+ * stays fully deterministic, node counts included.
  */
 
 /**
@@ -53,8 +63,86 @@ import { MoveOrdering } from './moveOrdering';
  */
 export const MATE_SCORE = 1_000_000;
 
+/**
+ * The deepest ply the search can report a mate from. Mate scores are
+ * ply-adjusted for the transposition table (below), and any score whose
+ * magnitude is within `MAX_TT_PLY` of `MATE_SCORE` is treated as a mate
+ * score. 512 plies is far beyond the engine's depth caps (the worker's
+ * depth knob) and far above the ~10K-centipawn ceiling of any material
+ * + PST total, so the classification is unambiguous.
+ */
+const MAX_TT_PLY = 512;
+
+/** Scores above this magnitude are mate scores, not centipawn totals. */
+const MATE_THRESHOLD = MATE_SCORE - MAX_TT_PLY;
+
+/**
+ * Convert a score found at `ply` to transposition-table coordinates:
+ * mate scores are rewritten to be measured from the position itself, so
+ * the stored value is independent of the ply the position was reached
+ * at ("mate in k plies from here"), and entries stay valid across
+ * searches and across transpositions. Non-mate (centipawn) scores pass
+ * through unchanged.
+ */
+export function scoreToTT(score: number, ply: number): number {
+  if (score > MATE_THRESHOLD) {
+    return score + ply;
+  }
+  if (score < -MATE_THRESHOLD) {
+    return score - ply;
+  }
+  return score;
+}
+
+/**
+ * Invert `scoreToTT`: convert a stored table score back to the current
+ * search's coordinates at `ply`. A stored mate-in-k becomes
+ * `MATE_SCORE - k - ply` (or its negation) at this ply, so "mate in N"
+ * stays measured from the root consistently — the classic TT
+ * correctness trap; the test suite shows no mate-score regression.
+ */
+export function scoreFromTT(score: number, ply: number): number {
+  if (score > MATE_THRESHOLD) {
+    return score - ply;
+  }
+  if (score < -MATE_THRESHOLD) {
+    return score + ply;
+  }
+  return score;
+}
+
 /** The leaf scoring function: a side-to-move-relative score. */
 export type Evaluator = (state: BoardState) => number;
+
+/**
+ * The TT cutoff rule at a node: a probed entry is usable as a cutoff
+ * only when its bound matches the window — `exact` always; `lower` only
+ * when the stored score is at least beta (fail high); `upper` only when
+ * the stored score is at most alpha (fail low). An `upper` entry never
+ * causes a fail-high and a `lower` entry never a fail-low: a bound
+ * proves the true score lies on one side of the stored value, and a
+ * cutoff is only valid in the direction the bound was proven. When the
+ * bound does not match, `cutoff` is false and the caller re-searches,
+ * using the stored move only as the first-move hint.
+ */
+export function ttCutoffScore(
+  bound: Bound,
+  stored: number,
+  alpha: number,
+  beta: number,
+): { cutoff: boolean; score: number } {
+  if (bound === 'exact') {
+    return { cutoff: true, score: stored };
+  }
+  if (bound === 'lower') {
+    return stored >= beta
+      ? { cutoff: true, score: stored }
+      : { cutoff: false, score: stored };
+  }
+  return stored <= alpha
+    ? { cutoff: true, score: stored }
+    : { cutoff: false, score: stored };
+}
 
 /**
  * Search knobs. `ordered` toggles task 3.3's move ordering: `true`
@@ -80,6 +168,15 @@ export interface SearchOptions {
   readonly pvMove?: Move | null;
   /** Cooperative deadline check; when true, the search throws SearchTimeoutError. */
   readonly shouldAbort?: () => boolean;
+  /**
+   * Optional transposition table (task 3.5): when provided, every node
+   * probes before generating moves and stores after searching, and the
+   * stored best move feeds move ordering. Strict opt-in — without it the
+   * search is byte-for-byte the pre-TT search (same moves, scores, and
+   * node counts), so existing callers and determinism tests are
+   * unaffected. A fresh generation is ticked at the start of the search.
+   */
+  readonly tt?: TranspositionTable | null;
 }
 
 /**
@@ -141,6 +238,20 @@ function sameMove(a: Move, b: Move): boolean {
   return a.from === b.from && a.to === b.to && a.promotion === b.promotion;
 }
 
+/** True when a generated move matches a stored transposition-table move. */
+function sameTTMove(move: Move, ttMove: TTMove): boolean {
+  return (
+    move.from === ttMove.from &&
+    move.to === ttMove.to &&
+    move.promotion === ttMove.promotion
+  );
+}
+
+/** The minimal TT descriptor for a generated move. */
+function ttMoveOf(move: Move): TTMove {
+  return { from: move.from, to: move.to, promotion: move.promotion };
+}
+
 /**
  * Negamax over `generateLegalMoves(state)`, recursing with makeMove /
  * unmakeMove. Returns the best score from the side to move's perspective.
@@ -149,6 +260,16 @@ function sameMove(a: Move, b: Move): boolean {
  * each node's moves are reordered first (MVV-LVA, killers, history) and a
  * quiet move that cuts beta is recorded as a killer and a history bonus —
  * this never changes the minimax result, only how early cutoffs happen.
+ *
+ * When `tt` is provided, the node probes before generating any move: a
+ * full-key-verified entry searched to at least `depth` whose bound
+ * matches the window (see `ttCutoffScore`) returns immediately — the
+ * whole subtree is skipped. Otherwise the entry's best move is moved to
+ * the front of the move list (a pure permutation — the position is
+ * identical by key, so the move is legal) and the node re-searches. The
+ * result is stored back at the end with the ply-adjusted score and the
+ * alpha-beta node type. The TT never changes the minimax answer; it only
+ * removes re-expanded transpositions.
  */
 function negamax(
   state: BoardState,
@@ -160,6 +281,7 @@ function negamax(
   ordered: boolean,
   ordering: MoveOrdering,
   shouldAbort: (() => boolean) | undefined,
+  tt: TranspositionTable | null,
 ): number {
   ordering.nodes++;
   // Cooperative deadline: the iterative-deepening wrapper abandons an
@@ -169,42 +291,96 @@ function negamax(
   if (shouldAbort !== undefined && shouldAbort()) {
     throw new SearchTimeoutError(ordering.nodes);
   }
-  const moves = generateLegalMoves(state);
-  if (moves.length === 0) {
-    return isInCheck(state, state.turn) ? -(MATE_SCORE - ply) : 0;
-  }
-  if (depth === 0) {
-    return evaluate(state);
-  }
-  const searched = ordered ? ordering.orderMoves(state, moves, ply) : moves;
-  let best = -Infinity;
-  for (const move of searched) {
-    makeMove(state, move);
-    const score = -negamax(
-      state,
-      depth - 1,
-      -beta,
-      -alpha,
-      ply + 1,
-      evaluate,
-      ordered,
-      ordering,
-      shouldAbort,
-    );
-    unmakeMove(state);
-    if (score > best) {
-      best = score;
-    }
-    if (best > alpha) {
-      alpha = best;
-    }
-    if (alpha >= beta) {
-      if (ordered && isQuiet(move)) {
-        ordering.recordKiller(move, ply);
-        ordering.recordHistory(move, depth);
+
+  // Transposition-table probe: a matching entry can cut the whole
+  // subtree before a single move is generated. The score is converted
+  // back from table coordinates to this node's ply.
+  let ttMove: TTMove | null = null;
+  if (tt !== null) {
+    const entry = tt.probe(state.zobristKey, depth);
+    if (entry !== null) {
+      const stored = scoreFromTT(entry.score, ply);
+      const cutoff = ttCutoffScore(entry.bound, stored, alpha, beta);
+      if (cutoff.cutoff) {
+        return cutoff.score;
       }
-      break;
+      ttMove = entry.move;
     }
+  }
+
+  const moves = generateLegalMoves(state);
+  let best: number;
+  let bestMove: Move | null = null;
+  let bound: Bound;
+  if (moves.length === 0) {
+    // Terminal: exact and depth-independent (after ply adjustment), so it
+    // is stored so a later probe of the same position skips the movegen.
+    best = isInCheck(state, state.turn) ? -(MATE_SCORE - ply) : 0;
+    bound = 'exact';
+  } else if (depth === 0) {
+    // The static evaluation IS the exact depth-0 value.
+    best = evaluate(state);
+    bound = 'exact';
+  } else {
+    let searched = ordered ? ordering.orderMoves(state, moves, ply) : moves;
+    // A stored best move from a previous search of this identical position
+    // is tried first — feeds #18's move ordering (a pure permutation).
+    if (ttMove !== null) {
+      const index = searched.findIndex((move) => sameTTMove(move, ttMove));
+      if (index > 0) {
+        searched = [
+          searched[index],
+          ...searched.slice(0, index),
+          ...searched.slice(index + 1),
+        ];
+      }
+    }
+    const alphaOrig = alpha;
+    best = -Infinity;
+    for (const move of searched) {
+      makeMove(state, move);
+      const score = -negamax(
+        state,
+        depth - 1,
+        -beta,
+        -alpha,
+        ply + 1,
+        evaluate,
+        ordered,
+        ordering,
+        shouldAbort,
+        tt,
+      );
+      unmakeMove(state);
+      if (score > best) {
+        best = score;
+        bestMove = move;
+      }
+      if (best > alpha) {
+        alpha = best;
+      }
+      if (alpha >= beta) {
+        if (ordered && isQuiet(move)) {
+          ordering.recordKiller(move, ply);
+          ordering.recordHistory(move, depth);
+        }
+        break;
+      }
+    }
+    // The alpha-beta node type: fail high → lower bound (the true score
+    // is at least `best`); fail low → upper bound (at most `best`);
+    // otherwise the value was resolved inside the window → exact.
+    bound = best >= beta ? 'lower' : best > alphaOrig ? 'exact' : 'upper';
+  }
+
+  if (tt !== null) {
+    tt.store(
+      state.zobristKey,
+      depth,
+      scoreToTT(best, ply),
+      bound,
+      bestMove === null ? null : ttMoveOf(bestMove),
+    );
   }
   return best;
 }
@@ -231,6 +407,12 @@ export function search(
   assertValidDepth(depth);
   const ordered = options.ordered ?? true;
   const shouldAbort = options.shouldAbort;
+  const tt = options.tt ?? null;
+  if (tt !== null) {
+    // Entries stored by earlier searches stay probeable, but get replaced
+    // first on collision (see transpositionTable.ts replacement policy).
+    tt.newGeneration();
+  }
   const moves = generateLegalMoves(state);
   if (moves.length === 0) {
     return {
@@ -280,6 +462,7 @@ export function search(
         ordered,
         ordering,
         shouldAbort,
+        tt,
       );
       unmakeMove(state);
       if (score > bestScore) {
