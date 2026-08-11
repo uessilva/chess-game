@@ -1,4 +1,10 @@
-import { parseFen, START_FEN } from './core';
+import {
+  generateLegalMoves,
+  makeMove,
+  parseFen,
+  START_FEN,
+  toFen,
+} from './core';
 import type { Color, PieceType, Square } from './core';
 import {
   DEFAULT_SQUARE_SIZE,
@@ -71,6 +77,62 @@ export interface BoardMountOptions {
   readonly cancelFrame?: (id: number) => void;
   /** Injectable sound player; defaults to synthesized Web Audio tones. */
   readonly sound?: SoundPlayer;
+  /**
+   * Game mode: 'local' is two humans on one board (the default); 'engine'
+   * gives one side to the engine (task 3.2), which searches in a Web
+   * Worker so the UI thread never blocks.
+   */
+  readonly mode?: 'local' | 'engine';
+  /** The engine's color in engine mode; defaults to Black. */
+  readonly engineColor?: Color;
+  /** Fixed search depth for engine moves; defaults to 4 (issue 3.2). */
+  readonly engineDepth?: number;
+  /**
+   * Injectable worker factory (the createImage / requestFrame injection
+   * pattern): tests substitute a fake worker; the default builds Vite's
+   * module worker from ./engine/worker.ts.
+   */
+  readonly createWorker?: () => EngineWorker;
+}
+
+/**
+ * The wire protocol the UI speaks to the engine worker (task 3.2). FEN is
+ * the serializable boundary contract — the worker parses the position
+ * itself, matching core's plain-data principle. The types are declared
+ * here (structurally identical to the worker's own) so `src/ui` never
+ * imports from `src/engine`; TypeScript's structural typing keeps the two
+ * sides compatible.
+ */
+export interface EngineSearchRequest {
+  readonly type: 'search';
+  readonly requestId: number;
+  readonly fen: string;
+  readonly depth: number;
+}
+
+export interface EngineSearchResult {
+  readonly type: 'search-result';
+  readonly requestId: number;
+  readonly move: {
+    readonly from: number;
+    readonly to: number;
+    readonly promotion?: PieceType;
+  } | null;
+  readonly score: number;
+}
+
+/** The subset of the Worker API the board uses. */
+export interface EngineWorker {
+  postMessage(message: EngineSearchRequest): void;
+  onmessage: ((event: MessageEvent<EngineSearchResult>) => void) | null;
+  terminate?: () => void;
+}
+
+/** Vite's module-worker form: the worker bundles ./engine/worker.ts. */
+function createDefaultWorker(): EngineWorker {
+  return new Worker(new URL('./engine/worker.ts', import.meta.url), {
+    type: 'module',
+  }) as unknown as EngineWorker;
 }
 
 /**
@@ -169,6 +231,8 @@ export function mountBoard(
         controller.choosePromotion(pieceType);
         commitFromHistory(false, historyLength);
         syncUi();
+        // If the promoted side's turn hands over to the engine, it moves now.
+        dispatchEngineSearch();
       });
       return button;
     },
@@ -285,9 +349,19 @@ export function mountBoard(
       controller.clearSelection();
     }
     syncUi();
+    // A committed human move may hand the turn to the engine; a move that
+    // only changed selection/promotion state leaves the turn alone and this
+    // is a no-op.
+    dispatchEngineSearch();
   };
 
   const onPointerDown = (event: PointerEvent): void => {
+    if (searchPending) {
+      // The engine is thinking: board input is locked (no selection, no
+      // moves) until the reply lands — same discipline as the animation
+      // lock, but for the engine's turn. New game stays available.
+      return;
+    }
     if (controller.pendingPromotion !== null) {
       // Clicking outside the open picker cancels the pending promotion; the
       // click itself never starts a gesture or changes selection.
@@ -348,10 +422,19 @@ export function mountBoard(
     if (drag.drag !== null) {
       drag.pointerCancel(); // abort any in-flight lift: piece reverts, no move
     }
+    if (searchPending) {
+      // Cancel the in-flight search: bump the id so a late reply is stale
+      // and can never move pieces in the fresh game.
+      latestRequestId++;
+      searchPending = false;
+    }
     // No confirmation dialog — immediate reset for casual local play.
     controller.reset();
     animator.reset();
     syncUi();
+    // In engine mode the engine is a side like any other: if it is White,
+    // it opens the fresh game; if Black it waits for the first human move.
+    dispatchEngineSearch();
   };
   newGameButton.addEventListener('click', onNewGame);
 
@@ -397,6 +480,91 @@ export function mountBoard(
     frameId = scheduleFrame(frame);
   }
 
+  // Engine mode (task 3.2): the engine is a side, exactly like a human —
+  // after any committed move that hands it the turn (and on mount when it
+  // is White), the board dispatches a search to the worker. FEN is the
+  // serializable boundary; the reply arrives with the requestId of the
+  // request it answers, and any reply whose id is no longer current is
+  // stale (superseded by New game or stop) and never applies a move.
+  const mode = options.mode ?? 'local';
+  const engineColor = options.engineColor ?? 'black';
+  const engineDepth = options.engineDepth ?? 4;
+  const createWorker = options.createWorker ?? createDefaultWorker;
+  let engineWorker: EngineWorker | null = null;
+  let searchPending = false;
+  let requestSeq = 0;
+  let latestRequestId = 0;
+
+  /**
+   * Apply the engine's committed move through the same path as a human
+   * move: find the legal Move matching the wire from/to/promotion, then
+   * makeMove + the animation overlay + syncUi — last-move highlight, check
+   * glow, and sounds work unchanged. Promotion moves arrive with the piece
+   * already chosen by the search.
+   */
+  const onEngineResult = (event: MessageEvent<EngineSearchResult>): void => {
+    const message = event.data;
+    if (message.type !== 'search-result') {
+      return;
+    }
+    if (message.requestId !== latestRequestId) {
+      return; // stale reply from a superseded search — drop it
+    }
+    searchPending = false;
+    const moveData = message.move;
+    if (moveData === null) {
+      // The engine found no legal move. The dispatch guard never searches a
+      // terminal position, so this is defensive: just re-sync the UI.
+      syncUi();
+      return;
+    }
+    const historyLength = state.history.length;
+    const move = generateLegalMoves(state).find(
+      (m) =>
+        m.from === moveData.from &&
+        m.to === moveData.to &&
+        m.promotion === moveData.promotion,
+    );
+    if (move !== undefined) {
+      makeMove(state, move);
+    }
+    commitFromHistory(false, historyLength);
+    syncUi();
+  };
+
+  /**
+   * Dispatch a search if it is the engine's turn and the game is live.
+   * While the search is in flight the status line shows the thinking
+   * indicator and `searchPending` locks board input.
+   */
+  const dispatchEngineSearch = (): void => {
+    if (mode !== 'engine' || engineWorker === null || searchPending) {
+      return;
+    }
+    if (state.turn !== engineColor) {
+      return;
+    }
+    if (isTerminal(status)) {
+      return; // never search a finished game
+    }
+    const requestId = ++requestSeq;
+    latestRequestId = requestId;
+    searchPending = true;
+    statusLine.textContent = 'Engine thinking…';
+    engineWorker.postMessage({
+      type: 'search',
+      requestId,
+      fen: toFen(state),
+      depth: engineDepth,
+    });
+  };
+
+  if (mode === 'engine') {
+    engineWorker = createWorker();
+    engineWorker.onmessage = onEngineResult;
+    dispatchEngineSearch(); // engine-White opens the game on mount
+  }
+
   return {
     canvas,
     ctx,
@@ -408,6 +576,12 @@ export function mountBoard(
     newGameButton,
     picker,
     stop: () => {
+      if (searchPending) {
+        latestRequestId++; // drop any late reply before tearing down
+        searchPending = false;
+      }
+      engineWorker?.terminate?.();
+      engineWorker = null;
       if (frameId !== null) {
         cancelFrame(frameId);
         frameId = null;

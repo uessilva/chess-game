@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mountBoard } from './main';
-import type { PromotionChoiceButton } from './main';
+import type {
+  EngineSearchRequest,
+  EngineSearchResult,
+  EngineWorker,
+  PromotionChoiceButton,
+} from './main';
 import { algebraicOf, PIECES, squareFromAlgebraic, toFen } from './core';
 import { LIFT_OFFSET, squareToPixel, SPRITE_SOURCES } from './ui';
 import type { BoardOrientation } from './ui';
@@ -1549,5 +1554,224 @@ describe('mountBoard: drag snap and sounds', () => {
     dragPiece(env, 'g1', 'e2');
     expect(moveSound).toHaveBeenCalledTimes(1);
     expect(captureSound).not.toHaveBeenCalled();
+  });
+});
+
+describe('mountBoard: engine mode', () => {
+  // Scholar's mate final position: Black (the engine) is checkmated.
+  const SCHOLARS_MATE_FEN =
+    'r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4';
+  // White (Ka6, Qb1) mates Black (Ka8) in one with Qb7#.
+  const MATE_IN_ONE_FEN = 'k7/8/K7/8/8/8/8/1Q6 w - - 0 1';
+
+  /**
+   * A fake engine worker: records every posted search request and lets the
+   * test deliver a reply through the same onmessage path the board uses.
+   */
+  function createFakeEngineWorker(): {
+    worker: EngineWorker;
+    posted: EngineSearchRequest[];
+    reply: (result: EngineSearchResult) => void;
+  } {
+    const posted: EngineSearchRequest[] = [];
+    let onmessage: ((event: MessageEvent<EngineSearchResult>) => void) | null =
+      null;
+    const worker: EngineWorker = {
+      postMessage(message) {
+        posted.push(message);
+      },
+      set onmessage(cb) {
+        onmessage = cb;
+      },
+      get onmessage() {
+        return onmessage;
+      },
+    };
+    return {
+      worker,
+      posted,
+      reply(result) {
+        onmessage?.({ data: result } as MessageEvent<EngineSearchResult>);
+      },
+    };
+  }
+
+  it('plays a full turn as Black: locks input, shows thinking, applies the reply with animation', () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const fake = createFakeEngineWorker();
+    const result = mountBoard(env.container, {
+      mode: 'engine',
+      engineColor: 'black',
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+      createWorker: () => fake.worker,
+    });
+
+    // Engine is Black: no search on mount — it is White to move.
+    expect(fake.posted).toHaveLength(0);
+    expect(result.statusLine.textContent).toBe('White to move');
+
+    // White commits e2-e4; the engine's turn begins with a search request.
+    clickSquare(env, 'e2');
+    clickSquare(env, 'e4');
+    expect(fake.posted).toHaveLength(1);
+    expect(fake.posted[0].fen).toBe(
+      'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
+    );
+    expect(fake.posted[0].depth).toBe(4); // default engine depth
+    expect(result.statusLine.textContent).toBe('Engine thinking…');
+
+    // Board input stays locked while the engine thinks.
+    clickSquare(env, 'e7');
+    expect(result.controller.selection).toBeNull();
+    expect(fake.posted).toHaveLength(1);
+
+    // The rAF loop keeps rendering frames while the engine thinks.
+    const framesBefore = env.fillRect.mock.calls.length;
+    driver.runFrames([0, 16.7, 33.4]);
+    expect(env.fillRect.mock.calls.length).toBeGreaterThan(framesBefore);
+
+    // The engine replies e7-e5 through the normal committed-move path:
+    // animated, turn returns to White, last-move highlight set.
+    fake.reply({
+      type: 'search-result',
+      requestId: fake.posted[0].requestId,
+      move: {
+        from: squareFromAlgebraic('e7'),
+        to: squareFromAlgebraic('e5'),
+      },
+      score: 20,
+    });
+    expect(toFen(result.controller.state)).toBe(
+      'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2',
+    );
+    expect(result.statusLine.textContent).toBe('White to move');
+    expect(result.animator.lastMove).toEqual({
+      from: squareFromAlgebraic('e7'),
+      to: squareFromAlgebraic('e5'),
+    });
+    expect(result.animator.isAnimating).toBe(true);
+
+    // The engine's glide completes and play continues.
+    driver.runFrames([300, 560]);
+    expect(result.animator.isAnimating).toBe(false);
+  });
+
+  it('plays the opening move as White on mount without any player input', () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const fake = createFakeEngineWorker();
+    const result = mountBoard(env.container, {
+      mode: 'engine',
+      engineColor: 'white',
+      engineDepth: 2,
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+      createWorker: () => fake.worker,
+    });
+
+    // The engine's first move is dispatched immediately on mount.
+    expect(fake.posted).toHaveLength(1);
+    expect(fake.posted[0].fen).toBe(START_TO_FEN);
+    expect(fake.posted[0].depth).toBe(2); // injected depth honored
+    expect(result.statusLine.textContent).toBe('Engine thinking…');
+
+    fake.reply({
+      type: 'search-result',
+      requestId: fake.posted[0].requestId,
+      move: {
+        from: squareFromAlgebraic('e2'),
+        to: squareFromAlgebraic('e4'),
+      },
+      score: 30,
+    });
+    expect(toFen(result.controller.state)).toBe(
+      'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
+    );
+    expect(result.statusLine.textContent).toBe('Black to move');
+    expect(result.animator.lastMove).toEqual({
+      from: squareFromAlgebraic('e2'),
+      to: squareFromAlgebraic('e4'),
+    });
+  });
+
+  it('never dispatches a search when the game is terminal', () => {
+    // Mounting into the scholar-mate final position (engine is Black and
+    // checkmated): no search, the game-over banner shows.
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const fake = createFakeEngineWorker();
+    const result = mountBoard(env.container, {
+      fen: SCHOLARS_MATE_FEN,
+      mode: 'engine',
+      engineColor: 'black',
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+      createWorker: () => fake.worker,
+    });
+    expect(result.banner.hidden).toBe(false);
+    expect(fake.posted).toHaveLength(0);
+
+    // A human move that checkmates the engine dispatches nothing either.
+    const env2 = createFakeEnvironment();
+    const driver2 = createFrameDriver();
+    const fake2 = createFakeEngineWorker();
+    const result2 = mountBoard(env2.container, {
+      fen: MATE_IN_ONE_FEN,
+      mode: 'engine',
+      engineColor: 'black',
+      createImage: env2.createImage,
+      requestFrame: driver2.requestFrame,
+      cancelFrame: driver2.cancelFrame,
+      createWorker: () => fake2.worker,
+    });
+    clickSquare(env2, 'b1');
+    clickSquare(env2, 'b7');
+    expect(fake2.posted).toHaveLength(0);
+    expect(result2.banner.hidden).toBe(false);
+    expect(result2.banner.textContent).toBe('Checkmate — White wins');
+  });
+
+  it('cancels an in-flight search on New game: a late stale reply never moves pieces', () => {
+    const env = createFakeEnvironment();
+    const driver = createFrameDriver();
+    const fake = createFakeEngineWorker();
+    const result = mountBoard(env.container, {
+      mode: 'engine',
+      engineColor: 'black',
+      createImage: env.createImage,
+      requestFrame: driver.requestFrame,
+      cancelFrame: driver.cancelFrame,
+      createWorker: () => fake.worker,
+    });
+
+    clickSquare(env, 'e2');
+    clickSquare(env, 'e4');
+    expect(fake.posted).toHaveLength(1);
+    expect(result.statusLine.textContent).toBe('Engine thinking…');
+
+    // New game while the search is in flight.
+    result.newGameButton.click();
+    expect(toFen(result.controller.state)).toBe(START_TO_FEN);
+    expect(result.statusLine.textContent).toBe('White to move');
+
+    // A late reply carrying the superseded requestId is dropped: no piece
+    // moves in the fresh game.
+    fake.reply({
+      type: 'search-result',
+      requestId: fake.posted[0].requestId,
+      move: {
+        from: squareFromAlgebraic('e7'),
+        to: squareFromAlgebraic('e5'),
+      },
+      score: 20,
+    });
+    expect(toFen(result.controller.state)).toBe(START_TO_FEN);
+    expect(result.statusLine.textContent).toBe('White to move');
+    expect(result.controller.selection).toBeNull();
   });
 });
