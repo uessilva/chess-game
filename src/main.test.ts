@@ -1620,7 +1620,8 @@ describe('mountBoard: engine mode', () => {
     expect(fake.posted[0].fen).toBe(
       'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
     );
-    expect(fake.posted[0].depth).toBe(4); // default engine depth
+    expect(fake.posted[0].depth).toBe(4); // default engine depth cap
+    expect(fake.posted[0].timeMs).toBe(2000); // default engine thinking budget
     expect(result.statusLine.textContent).toBe('Engine thinking…');
 
     // Board input stays locked while the engine thinks.
@@ -1643,6 +1644,9 @@ describe('mountBoard: engine mode', () => {
         to: squareFromAlgebraic('e5'),
       },
       score: 20,
+      depth: 2,
+      nodes: 421,
+      elapsedMs: 5,
     });
     expect(toFen(result.controller.state)).toBe(
       'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2',
@@ -1687,6 +1691,9 @@ describe('mountBoard: engine mode', () => {
         to: squareFromAlgebraic('e4'),
       },
       score: 30,
+      depth: 2,
+      nodes: 421,
+      elapsedMs: 4,
     });
     expect(toFen(result.controller.state)).toBe(
       'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
@@ -1769,6 +1776,9 @@ describe('mountBoard: engine mode', () => {
         to: squareFromAlgebraic('e5'),
       },
       score: 20,
+      depth: 2,
+      nodes: 421,
+      elapsedMs: 6,
     });
     expect(toFen(result.controller.state)).toBe(START_TO_FEN);
     expect(result.statusLine.textContent).toBe('White to move');

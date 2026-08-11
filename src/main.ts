@@ -85,8 +85,18 @@ export interface BoardMountOptions {
   readonly mode?: 'local' | 'engine';
   /** The engine's color in engine mode; defaults to Black. */
   readonly engineColor?: Color;
-  /** Fixed search depth for engine moves; defaults to 4 (issue 3.2). */
+  /**
+   * Maximum search depth cap for engine moves; defaults to 4 (issue 3.2).
+   * The engine now thinks on a time budget (3.4) — this caps how deep its
+   * iterative deepening may go.
+   */
   readonly engineDepth?: number;
+  /**
+   * The engine's thinking budget in milliseconds (issue 3.4); defaults to
+   * 2000. The worker abandons an over-budget iteration and reports the
+   * last fully completed one.
+   */
+  readonly engineTimeMs?: number;
   /**
    * Injectable worker factory (the createImage / requestFrame injection
    * pattern): tests substitute a fake worker; the default builds Vite's
@@ -96,17 +106,20 @@ export interface BoardMountOptions {
 }
 
 /**
- * The wire protocol the UI speaks to the engine worker (task 3.2). FEN is
- * the serializable boundary contract — the worker parses the position
- * itself, matching core's plain-data principle. The types are declared
- * here (structurally identical to the worker's own) so `src/ui` never
- * imports from `src/engine`; TypeScript's structural typing keeps the two
- * sides compatible.
+ * The wire protocol the UI speaks to the engine worker (task 3.2, extended
+ * by 3.4). FEN is the serializable boundary contract — the worker parses
+ * the position itself, matching core's plain-data principle. The types are
+ * declared here (structurally identical to the worker's own) so `src/ui`
+ * never imports from `src/engine`; TypeScript's structural typing keeps
+ * the two sides compatible.
  */
 export interface EngineSearchRequest {
   readonly type: 'search';
   readonly requestId: number;
   readonly fen: string;
+  /** The thinking budget in milliseconds (issue 3.4). */
+  readonly timeMs: number;
+  /** Maximum-depth cap for iterative deepening. */
   readonly depth: number;
 }
 
@@ -119,6 +132,12 @@ export interface EngineSearchResult {
     readonly promotion?: PieceType;
   } | null;
   readonly score: number;
+  /** Deepest fully completed iteration (issue 3.4). */
+  readonly depth: number;
+  /** Total nodes searched across all iterations. */
+  readonly nodes: number;
+  /** Elapsed milliseconds. */
+  readonly elapsedMs: number;
 }
 
 /** The subset of the Worker API the board uses. */
@@ -489,6 +508,7 @@ export function mountBoard(
   const mode = options.mode ?? 'local';
   const engineColor = options.engineColor ?? 'black';
   const engineDepth = options.engineDepth ?? 4;
+  const engineTimeMs = options.engineTimeMs ?? 2000;
   const createWorker = options.createWorker ?? createDefaultWorker;
   let engineWorker: EngineWorker | null = null;
   let searchPending = false;
@@ -555,6 +575,7 @@ export function mountBoard(
       type: 'search',
       requestId,
       fen: toFen(state),
+      timeMs: engineTimeMs,
       depth: engineDepth,
     });
   };
