@@ -1,7 +1,9 @@
 import { generateLegalMoves, isInCheck, makeMove, unmakeMove } from '../core';
 import type { BoardState } from '../core/state';
 import type { Move } from '../core/types';
+import { MoveFlags } from '../core/types';
 import { evaluate as defaultEvaluate } from './eval';
+import { MoveOrdering } from './moveOrdering';
 
 /**
  * Fixed-depth negamax search with alpha-beta pruning (task 3.2).
@@ -28,14 +30,16 @@ import { evaluate as defaultEvaluate } from './eval';
  * `-(MATE_SCORE + ply)` would score a slower mate higher, so this file
  * follows the criteria.
  *
- * Alpha-beta is standard and move-order-blind on purpose: moves are tried
- * in plain `generateLegalMoves` order (move ordering is task 3.3 —
- * correctness before optimization). The window (alpha, beta) only ever
- * cuts branches that cannot beat the current best, so the root move and
- * score are identical to an unpruned negamax — verified by the reference
- * comparison in search.test.ts. Determinism: same position and depth
- * always yield the same move (ties resolve to the first move with the
- * maximum score in generation order).
+ * Alpha-beta is standard and move-order-blind: moves at each node are
+ * reordered by task 3.3's ordering (MVV-LVA captures, killers, history)
+ * purely to raise the cutoff rate — ordering is a permutation, so the
+ * window (alpha, beta) only ever cuts branches that cannot beat the
+ * current best, and the root move and score are identical to an
+ * unpruned negamax — verified by the reference comparison in
+ * search.test.ts. Determinism: same position and depth always yield the
+ * same move (ties resolve to the first move with the maximum score in
+ * generation order — the root is never reordered, since an infinite
+ * window makes its order irrelevant to nodes and scores).
  */
 
 /**
@@ -49,10 +53,29 @@ export const MATE_SCORE = 1_000_000;
 /** The leaf scoring function: a side-to-move-relative score. */
 export type Evaluator = (state: BoardState) => number;
 
+/**
+ * Search knobs. `ordered` toggles task 3.3's move ordering: `true`
+ * (default) reorders each node's move list with MVV-LVA captures,
+ * killers, and the history heuristic; `false` searches the natural
+ * `generateLegalMoves` order — the comparison baseline for the
+ * node-reduction acceptance gate. Either way the best move and score are
+ * identical, because ordering is a pure permutation and alpha-beta is
+ * move-order-blind.
+ */
+export interface SearchOptions {
+  readonly ordered?: boolean;
+}
+
 /** What a full root search returns: the best move and its score. */
 export interface SearchResult {
   readonly move: Move | null;
   readonly score: number;
+  /**
+   * Nodes visited by the search: the root position plus every negamax
+   * call (task 3.3's node counter). Strictly lower with ordering enabled
+   * at a fixed depth — the acceptance gate's measured quantity.
+   */
+  readonly nodes: number;
 }
 
 /**
@@ -68,10 +91,22 @@ function assertValidDepth(depth: number): void {
 }
 
 /**
+ * True for a quiet move: not a capture (en passant carries CAPTURE) and
+ * not a promotion. Only quiet moves are recorded as killers / history —
+ * captures already rank above quiets via MVV-LVA.
+ */
+function isQuiet(move: Move): boolean {
+  return (move.flags & (MoveFlags.CAPTURE | MoveFlags.PROMOTION)) === 0;
+}
+
+/**
  * Negamax over `generateLegalMoves(state)`, recursing with makeMove /
  * unmakeMove. Returns the best score from the side to move's perspective.
  * Terminal nodes are scored before the depth check so a checkmate is
- * always a mate score, never a static evaluation.
+ * always a mate score, never a static evaluation. When `ordered` is set,
+ * each node's moves are reordered first (MVV-LVA, killers, history) and a
+ * quiet move that cuts beta is recorded as a killer and a history bonus —
+ * this never changes the minimax result, only how early cutoffs happen.
  */
 function negamax(
   state: BoardState,
@@ -80,7 +115,10 @@ function negamax(
   beta: number,
   ply: number,
   evaluate: Evaluator,
+  ordered: boolean,
+  ordering: MoveOrdering,
 ): number {
+  ordering.nodes++;
   const moves = generateLegalMoves(state);
   if (moves.length === 0) {
     return isInCheck(state, state.turn) ? -(MATE_SCORE - ply) : 0;
@@ -88,10 +126,20 @@ function negamax(
   if (depth === 0) {
     return evaluate(state);
   }
+  const searched = ordered ? ordering.orderMoves(state, moves, ply) : moves;
   let best = -Infinity;
-  for (const move of moves) {
+  for (const move of searched) {
     makeMove(state, move);
-    const score = -negamax(state, depth - 1, -beta, -alpha, ply + 1, evaluate);
+    const score = -negamax(
+      state,
+      depth - 1,
+      -beta,
+      -alpha,
+      ply + 1,
+      evaluate,
+      ordered,
+      ordering,
+    );
     unmakeMove(state);
     if (score > best) {
       best = score;
@@ -100,6 +148,10 @@ function negamax(
       alpha = best;
     }
     if (alpha >= beta) {
+      if (ordered && isQuiet(move)) {
+        ordering.recordKiller(move, ply);
+        ordering.recordHistory(move, depth);
+      }
       break;
     }
   }
@@ -123,30 +175,49 @@ export function search(
   state: BoardState,
   depth: number,
   evaluate: Evaluator = defaultEvaluate,
+  options: SearchOptions = {},
 ): SearchResult {
   assertValidDepth(depth);
+  const ordered = options.ordered ?? true;
   const moves = generateLegalMoves(state);
   if (moves.length === 0) {
     return {
       move: null,
       score: isInCheck(state, state.turn) ? -MATE_SCORE : 0,
+      nodes: 1,
     };
   }
   if (depth === 0) {
-    return { move: null, score: evaluate(state) };
+    return { move: null, score: evaluate(state), nodes: 1 };
   }
+  const ordering = new MoveOrdering(depth);
+  ordering.nodes = 1; // the root position
+  // The root is searched with an infinite window, so its move order
+  // cannot affect node counts or scores — ordering would only re-break
+  // score ties. Keep the natural `generateLegalMoves` order here: ties
+  // resolve to the first move with the maximum score in generation
+  // order, exactly as an unordered search. Ordering applies at ply >= 1.
   let bestMove: Move | null = null;
   let bestScore = -Infinity;
   for (const move of moves) {
     makeMove(state, move);
-    const score = -negamax(state, depth - 1, -Infinity, Infinity, 1, evaluate);
+    const score = -negamax(
+      state,
+      depth - 1,
+      -Infinity,
+      Infinity,
+      1,
+      evaluate,
+      ordered,
+      ordering,
+    );
     unmakeMove(state);
     if (score > bestScore) {
       bestScore = score;
       bestMove = move;
     }
   }
-  return { move: bestMove, score: bestScore };
+  return { move: bestMove, score: bestScore, nodes: ordering.nodes };
 }
 
 /**
