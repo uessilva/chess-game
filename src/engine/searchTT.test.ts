@@ -77,7 +77,10 @@ describe('the TT never changes the engine answer', () => {
       expect(withTT.move, fen).toEqual(base.move);
       expect(withTT.score, fen).toBe(base.score);
     }
-  });
+    // Explicit timeout: this suite is fast in isolation (~2s) but the
+    // depth-2 search over six fixtures tripped the 5s default under
+    // parallel coverage load (a pre-existing flake, reproduced on main).
+  }, 60_000);
 
   it('matches the no-TT search on move and score at depth 3 (spot checks)', () => {
     for (const fen of [START_FEN, POS3_FEN, PERFT_FIXTURE_FENS[3]]) {
