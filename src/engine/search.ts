@@ -4,6 +4,7 @@ import type { Move } from '../core/types';
 import { MoveFlags } from '../core/types';
 import { evaluate as defaultEvaluate } from './eval';
 import { MoveOrdering } from './moveOrdering';
+import { quiescenceSearch } from './quiescence';
 import type { Bound, TranspositionTable, TTMove } from './transpositionTable';
 
 /**
@@ -177,6 +178,27 @@ export interface SearchOptions {
    * unaffected. A fresh generation is ticked at the start of the search.
    */
   readonly tt?: TranspositionTable | null;
+  /**
+   * Task 3.6 (#21): when true, the depth-0 horizon is extended by the
+   * quiescence search instead of returning the raw static evaluation —
+   * captures and promotions are searched past the horizon until the
+   * position is quiet (see quiescence.ts), resolving the horizon effect.
+   * `shouldAbort` and `tt` are passed through, so the deadline is honored
+   * inside qsearch and qsearch nodes share the transposition table. A
+   * deadline that fires inside a qsearch chain aborts the whole iteration
+   * like any other node: `search` throws `SearchTimeoutError` and never
+   * stores the truncated score in the TT.
+   * Default false, so the default search is byte-for-byte the pre-qsearch
+   * search (same moves, scores, and node counts) — the same strict opt-in
+   * policy as the TT.
+   *
+   * NOTE (shared-TT footgun): the TT is caller-owned and shared across
+   * searches, and depth-0 entries are mode-dependent — a raw-eval entry
+   * stored by a non-qsearch search can be probed as a cutoff by a later
+   * qsearch node and vice versa. Keep the qsearch setting stable for the
+   * lifetime of a table, or use a separate table per mode.
+   */
+  readonly qsearch?: boolean;
 }
 
 /**
@@ -282,6 +304,7 @@ function negamax(
   ordering: MoveOrdering,
   shouldAbort: (() => boolean) | undefined,
   tt: TranspositionTable | null,
+  qsearchEnabled: boolean,
 ): number {
   ordering.nodes++;
   // Cooperative deadline: the iterative-deepening wrapper abandons an
@@ -318,8 +341,34 @@ function negamax(
     best = isInCheck(state, state.turn) ? -(MATE_SCORE - ply) : 0;
     bound = 'exact';
   } else if (depth === 0) {
-    // The static evaluation IS the exact depth-0 value.
-    best = evaluate(state);
+    // The static evaluation IS the exact depth-0 value — unless task 3.6's
+    // qsearch is enabled, in which case the horizon is extended: captures
+    // and promotions are searched past the horizon until the position is
+    // quiet (see quiescence.ts). The qsearch root is this node — already
+    // counted by the entry increment above — so only its descendants add
+    // to the search-wide node counter; the base ply is this node's ply so
+    // mate scores stay measured from the root.
+    if (qsearchEnabled) {
+      const q = quiescenceSearch(state, alpha, beta, {
+        ply,
+        evaluate,
+        shouldAbort,
+        tt,
+      });
+      ordering.nodes += q.nodes - 1;
+      if (q.aborted) {
+        // A truncated qsearch result is never stored (quiescence.ts's own
+        // rule: its score was not fully resolved and could poison later
+        // probes) and must never surface as a completed value. Propagate
+        // the abort exactly like a mid-tree deadline hit, so the
+        // iterative-deepening wrapper discards the whole iteration — the
+        // throw also skips the TT store below.
+        throw new SearchTimeoutError(ordering.nodes);
+      }
+      best = q.score;
+    } else {
+      best = evaluate(state);
+    }
     bound = 'exact';
   } else {
     let searched = ordered ? ordering.orderMoves(state, moves, ply) : moves;
@@ -350,6 +399,7 @@ function negamax(
         ordering,
         shouldAbort,
         tt,
+        qsearchEnabled,
       );
       unmakeMove(state);
       if (score > best) {
@@ -396,7 +446,8 @@ function negamax(
  *   stalemated.
  * - Depth 0 (perft-harness-style validation): no plies to search, so no
  *   move is chosen — `move` is null and the score is the static
- *   evaluation.
+ *   evaluation (or the qsearch-resolved value when `qsearch` is enabled:
+ *   the depth-0 horizon is extended at the root too).
  */
 export function search(
   state: BoardState,
@@ -408,6 +459,7 @@ export function search(
   const ordered = options.ordered ?? true;
   const shouldAbort = options.shouldAbort;
   const tt = options.tt ?? null;
+  const qsearchEnabled = options.qsearch ?? false;
   if (tt !== null) {
     // Entries stored by earlier searches stay probeable, but get replaced
     // first on collision (see transpositionTable.ts replacement policy).
@@ -422,6 +474,21 @@ export function search(
     };
   }
   if (depth === 0) {
+    if (qsearchEnabled) {
+      // The documented depth-0 horizon extension applies at the root too:
+      // resolve the position's tactics instead of returning the raw eval.
+      // The root is searched with the infinite window, exactly like the
+      // root of a deeper search.
+      const q = quiescenceSearch(state, -Infinity, Infinity, {
+        evaluate,
+        shouldAbort,
+        tt,
+      });
+      if (q.aborted) {
+        throw new SearchTimeoutError(q.nodes);
+      }
+      return { move: null, score: q.score, nodes: q.nodes };
+    }
     return { move: null, score: evaluate(state), nodes: 1 };
   }
   const ordering = new MoveOrdering(depth);
@@ -463,6 +530,7 @@ export function search(
         ordering,
         shouldAbort,
         tt,
+        qsearchEnabled,
       );
       unmakeMove(state);
       if (score > bestScore) {
