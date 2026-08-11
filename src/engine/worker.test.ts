@@ -25,9 +25,15 @@ function collect(
 }
 
 describe('handleSearchRequest', () => {
-  it('replies with a matching requestId, a move legal in parseFen(fen), and the search score', () => {
+  it('replies with a matching requestId, a legal move, the score, and the task-3.4 result fields', () => {
     const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-    const posts = collect({ type: 'search', requestId: 42, fen, depth: 2 });
+    const posts = collect({
+      type: 'search',
+      requestId: 42,
+      fen,
+      depth: 2,
+      timeMs: 1000,
+    });
     expect(posts).toHaveLength(1);
     const reply = posts[0];
     expect(reply.type).toBe('search-result');
@@ -45,19 +51,29 @@ describe('handleSearchRequest', () => {
     // The score is the root search's score for the chosen move — a number,
     // positive here because White is heavily favoured at depth 2.
     expect(typeof reply.score).toBe('number');
+    // The reply carries the full iterative-deepening result: the deepest
+    // completed iteration (capped at the request's depth), the node count,
+    // and the elapsed time.
+    expect(reply.depth).toBeGreaterThanOrEqual(1);
+    expect(reply.depth).toBeLessThanOrEqual(2);
+    expect(reply.nodes).toBeGreaterThan(0);
+    expect(reply.elapsedMs).toBeGreaterThanOrEqual(0);
   });
 
   it('reports a mate score for a forced mate at depth 1', () => {
+    // An exhausted budget still completes depth 1 (floor guarantee).
     const posts = collect({
       type: 'search',
       requestId: 7,
       fen: MATE_IN_ONE_FEN,
       depth: 1,
+      timeMs: 0,
     });
     expect(posts).toHaveLength(1);
     const reply = posts[0];
     expect(reply.move).toEqual({ from: 1, to: 97 }); // b1->b7, Qb7#
     expect(reply.score).toBe(MATE_SCORE - 1);
+    expect(reply.depth).toBe(1);
   });
 
   it('replies with move null for a checkmated position', () => {
@@ -66,10 +82,12 @@ describe('handleSearchRequest', () => {
       requestId: 3,
       fen: SCHOLARS_MATE_FEN,
       depth: 2,
+      timeMs: 1000,
     });
     expect(posts).toHaveLength(1);
     expect(posts[0].move).toBeNull();
     expect(posts[0].score).toBe(-MATE_SCORE);
+    expect(posts[0].depth).toBe(0);
   });
 
   it('replies with move null and score 0 for a stalemate — a draw, never a mate', () => {
@@ -78,10 +96,12 @@ describe('handleSearchRequest', () => {
       requestId: 9,
       fen: STALEMATE_FEN,
       depth: 2,
+      timeMs: 1000,
     });
     expect(posts).toHaveLength(1);
     expect(posts[0].move).toBeNull();
     expect(posts[0].score).toBe(0);
+    expect(posts[0].depth).toBe(0);
   });
 
   it('carries the promotion piece through the wire format when the search promotes', () => {
@@ -91,6 +111,7 @@ describe('handleSearchRequest', () => {
       requestId: 5,
       fen: '4k3/P7/8/8/8/8/8/4K3 w - - 0 1',
       depth: 2,
+      timeMs: 1000,
     });
     expect(posts).toHaveLength(1);
     const move = posts[0].move;

@@ -1,15 +1,22 @@
 import { parseFen } from '../core';
 import type { PieceType } from '../core';
-import { search } from './search';
+import { searchWithTime } from './iterativeDeepening';
 
 /**
- * Web Worker protocol shell (task 3.2): a thin, serializable boundary
- * around the pure search. FEN is the wire contract — matching core's
- * plain-data, side-effect-free principle — so the worker parses the
- * position itself and the main thread never sends a live BoardState.
+ * Web Worker protocol shell (task 3.2, extended by 3.4): a thin,
+ * serializable boundary around the pure search. FEN is the wire contract —
+ * matching core's plain-data, side-effect-free principle — so the worker
+ * parses the position itself and the main thread never sends a live
+ * BoardState.
  *
- * Request:  `{ type: 'search', requestId, fen, depth }`
- * Response: `{ type: 'search-result', requestId, move, score }`
+ * Request:  `{ type: 'search', requestId, fen, timeMs, depth }`
+ * Response: `{ type: 'search-result', requestId, move, score, depth,
+ *             nodes, elapsedMs }`
+ *
+ * The request carries the thinking budget (`timeMs`); `depth` is the
+ * maximum-depth cap the UI's engine-depth knob provides. The reply carries
+ * the full task-3.4 result: move, score, the deepest completed depth, the
+ * node count, and the elapsed time.
  *
  * The handler is exported as a pure function (`handleSearchRequest`) so
  * tests drive it directly in Node; the top-level wiring below attaches it
@@ -23,6 +30,9 @@ export interface SearchRequestMessage {
   readonly type: 'search';
   readonly requestId: number;
   readonly fen: string;
+  /** The thinking budget in milliseconds. */
+  readonly timeMs: number;
+  /** Maximum-depth cap for iterative deepening. */
   readonly depth: number;
 }
 
@@ -35,6 +45,12 @@ export interface SearchResultMessage {
     readonly promotion?: PieceType;
   } | null;
   readonly score: number;
+  /** Deepest fully completed iteration. */
+  readonly depth: number;
+  /** Total nodes searched across all iterations. */
+  readonly nodes: number;
+  /** Elapsed milliseconds. */
+  readonly elapsedMs: number;
 }
 
 /**
@@ -51,7 +67,10 @@ export function handleSearchRequest(
     return;
   }
   const state = parseFen(message.fen);
-  const result = search(state, message.depth);
+  const result = searchWithTime(state, {
+    timeMs: message.timeMs,
+    maxDepth: message.depth,
+  });
   post({
     type: 'search-result',
     requestId: message.requestId,
@@ -64,6 +83,9 @@ export function handleSearchRequest(
             promotion: result.move.promotion,
           },
     score: result.score,
+    depth: result.depth,
+    nodes: result.nodes,
+    elapsedMs: result.elapsedMs,
   });
 }
 

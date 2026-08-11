@@ -39,7 +39,10 @@ import { MoveOrdering } from './moveOrdering';
  * search.test.ts. Determinism: same position and depth always yield the
  * same move (ties resolve to the first move with the maximum score in
  * generation order — the root is never reordered, since an infinite
- * window makes its order irrelevant to nodes and scores).
+ * window makes its order irrelevant to nodes and scores). The one
+ * exception is task 3.4's iterative-deepening PV move, which is moved
+ * to the front of the root; that is still a pure permutation, so a
+ * fixed-depth call without a `pvMove` behaves exactly as before.
  */
 
 /**
@@ -61,9 +64,38 @@ export type Evaluator = (state: BoardState) => number;
  * node-reduction acceptance gate. Either way the best move and score are
  * identical, because ordering is a pure permutation and alpha-beta is
  * move-order-blind.
+ *
+ * `pvMove` and `shouldAbort` exist for task 3.4's iterative-deepening
+ * wrapper. `pvMove` is the previous iteration's best move, searched first
+ * at the root (a pure permutation — the infinite root window makes it
+ * tie-breaking-neutral only when scores differ, and node counts never
+ * change, so plain fixed-depth callers are unaffected). `shouldAbort` is
+ * the cooperative deadline: when it returns true inside a node the search
+ * throws `SearchTimeoutError`, abandoning the in-flight iteration so the
+ * wrapper can fall back to the last fully completed one.
  */
 export interface SearchOptions {
   readonly ordered?: boolean;
+  /** Root move to search first (the previous ID iteration's PV move). */
+  readonly pvMove?: Move | null;
+  /** Cooperative deadline check; when true, the search throws SearchTimeoutError. */
+  readonly shouldAbort?: () => boolean;
+}
+
+/**
+ * Thrown by `search` when `shouldAbort()` turns true mid-iteration: the
+ * depth-budgeted search of an iterative-deepening iteration was abandoned
+ * before completion. `nodes` carries how many nodes that partial iteration
+ * had already visited, so the wrapper can still account for the work done.
+ */
+export class SearchTimeoutError extends Error {
+  readonly nodes: number;
+
+  constructor(nodes: number) {
+    super('search aborted: time budget exceeded');
+    this.name = 'SearchTimeoutError';
+    this.nodes = nodes;
+  }
 }
 
 /** What a full root search returns: the best move and its score. */
@@ -100,6 +132,16 @@ function isQuiet(move: Move): boolean {
 }
 
 /**
+ * Move identity: from/to plus the promotion piece. `generateLegalMoves`
+ * allocates fresh Move objects per call, so the previous iteration's PV
+ * move (a different object) must be matched structurally, never by
+ * reference.
+ */
+function sameMove(a: Move, b: Move): boolean {
+  return a.from === b.from && a.to === b.to && a.promotion === b.promotion;
+}
+
+/**
  * Negamax over `generateLegalMoves(state)`, recursing with makeMove /
  * unmakeMove. Returns the best score from the side to move's perspective.
  * Terminal nodes are scored before the depth check so a checkmate is
@@ -117,8 +159,16 @@ function negamax(
   evaluate: Evaluator,
   ordered: boolean,
   ordering: MoveOrdering,
+  shouldAbort: (() => boolean) | undefined,
 ): number {
   ordering.nodes++;
+  // Cooperative deadline: the iterative-deepening wrapper abandons an
+  // in-flight iteration by throwing; the node was visited, so it is
+  // counted before the throw. Depth 1 is exempt by design — the wrapper
+  // never passes shouldAbort for it (the floor guarantee).
+  if (shouldAbort !== undefined && shouldAbort()) {
+    throw new SearchTimeoutError(ordering.nodes);
+  }
   const moves = generateLegalMoves(state);
   if (moves.length === 0) {
     return isInCheck(state, state.turn) ? -(MATE_SCORE - ply) : 0;
@@ -139,6 +189,7 @@ function negamax(
       evaluate,
       ordered,
       ordering,
+      shouldAbort,
     );
     unmakeMove(state);
     if (score > best) {
@@ -179,6 +230,7 @@ export function search(
 ): SearchResult {
   assertValidDepth(depth);
   const ordered = options.ordered ?? true;
+  const shouldAbort = options.shouldAbort;
   const moves = generateLegalMoves(state);
   if (moves.length === 0) {
     return {
@@ -197,25 +249,53 @@ export function search(
   // score ties. Keep the natural `generateLegalMoves` order here: ties
   // resolve to the first move with the maximum score in generation
   // order, exactly as an unordered search. Ordering applies at ply >= 1.
+  // The sole exception is the iterative-deepening PV move: it is moved
+  // to the front (still a permutation) so each ID iteration re-confirms
+  // the previous iteration's best first.
+  let rootMoves = moves;
+  const pvMove = options.pvMove ?? null;
+  if (pvMove !== null) {
+    const index = moves.findIndex((move) => sameMove(move, pvMove));
+    if (index > 0) {
+      rootMoves = [
+        moves[index],
+        ...moves.slice(0, index),
+        ...moves.slice(index + 1),
+      ];
+    }
+  }
   let bestMove: Move | null = null;
   let bestScore = -Infinity;
-  for (const move of moves) {
-    makeMove(state, move);
-    const score = -negamax(
-      state,
-      depth - 1,
-      -Infinity,
-      Infinity,
-      1,
-      evaluate,
-      ordered,
-      ordering,
-    );
-    unmakeMove(state);
-    if (score > bestScore) {
-      bestScore = score;
-      bestMove = move;
+  const historyAtRoot = state.history.length;
+  try {
+    for (const move of rootMoves) {
+      makeMove(state, move);
+      const score = -negamax(
+        state,
+        depth - 1,
+        -Infinity,
+        Infinity,
+        1,
+        evaluate,
+        ordered,
+        ordering,
+        shouldAbort,
+      );
+      unmakeMove(state);
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = move;
+      }
     }
+  } catch (error) {
+    // An aborted iteration (task 3.4) throws mid-recursion: the exception
+    // unwinds past every unmakeMove along the aborted path, so the
+    // caller's state is left several plies deep. Restore it exactly
+    // before rethrowing — the caller's copy must always be legal-queryable.
+    while (state.history.length > historyAtRoot) {
+      unmakeMove(state);
+    }
+    throw error;
   }
   return { move: bestMove, score: bestScore, nodes: ordering.nodes };
 }
