@@ -1,11 +1,12 @@
 import { BOARD_SIZE, fileOf, isOnBoard, rankOf, square } from './board';
-import type { BoardState } from './state';
-import type { Color, PieceType, Square } from './types';
+import type { BoardState, CastlingRights } from './state';
+import type { Color, Piece, PieceType, Square } from './types';
 import { PIECES } from './types';
 
 /**
  * Zobrist hashing (task 1.8): a single 64-bit hash identifying a chess
- * position for threefold-repetition detection (FIDE article 9.2).
+ * position for threefold-repetition detection (FIDE article 9.2) and as
+ * the transposition-table key for the engine's search (#20).
  *
  * Position identity — two positions are the same iff this hash matches:
  * same piece placement, same side to move, same castling rights, and the
@@ -23,9 +24,17 @@ import { PIECES } from './types';
  * The halfmove clock and fullmove number are NOT part of identity.
  *
  * The table is generated once at module load from a fixed-seed PRNG
- * (mulberry32), so hashes are deterministic within a run. Incremental
- * XOR updating is a Phase 3 optimization (#20) — a full recompute per
- * position is fine now (correctness before optimization).
+ * (mulberry32), so hashes are deterministic within a run.
+ *
+ * `zobristHash` is the reference implementation (a full recompute).
+ * Task 3.5 (#20) adds the incremental path: `BoardState.zobristKey` is
+ * maintained by makeMove/unmakeMove via the exported helpers below
+ * (`pieceZobrist`, `SIDE_TO_MOVE_ZOBRIST`, `castlingZobrist`,
+ * `epFileZobrist`, `meaningfulEnPassant`), so the engine can key every
+ * search node in O(1) without rescanning the board. The invariant
+ * `state.zobristKey === zobristHash(state)` is enforced by tests after
+ * every move, and `meaningfulEnPassant` is exported so the incremental
+ * update applies exactly the same ep-identity rule as the reference.
  */
 
 /** En-passant capture geometry, mirroring movegen.ts exactly. */
@@ -98,8 +107,13 @@ const TABLE = generateTable();
  * available for the side to move (the movegen.ts adjacency condition:
  * a pawn of the mover stands one file over the target on the capture
  * rank), else null. A meaningless ep square hashes like no ep square.
+ *
+ * Exported so makeMove can compute the outgoing ep contribution of the
+ * pre-move position (before mutating) and the incoming one of the
+ * post-move position (after mutating) with the exact same identity rule
+ * `zobristHash` applies.
  */
-function meaningfulEnPassant(state: BoardState): Square | null {
+export function meaningfulEnPassant(state: BoardState): Square | null {
   const { board, enPassant, turn } = state;
   if (enPassant === null) {
     return null;
@@ -150,4 +164,47 @@ export function zobristHash(state: BoardState): bigint {
     hash ^= TABLE.epFile[fileOf(ep)];
   }
   return hash;
+}
+
+/** The value a (color, type) piece contributes on a square (0x88 index). */
+export function pieceZobrist(sq: Square, piece: Piece): bigint {
+  return TABLE.pieces[sq][PIECE_INDEX[piece.color][piece.type]];
+}
+
+/**
+ * The side-to-move contribution. `zobristHash` XORs it when black is to
+ * move; a move always flips the side to move, so makeMove XORs it
+ * unconditionally.
+ */
+export const SIDE_TO_MOVE_ZOBRIST: bigint = TABLE.sideToMove;
+
+/**
+ * The XOR of the contributions of the currently active castling rights.
+ * Rights are permanent (only ever revoked), so makeMove XORs the old
+ * rights out and the new rights in — the revoked ones drop out, the rest
+ * cancel.
+ */
+export function castlingZobrist(castling: CastlingRights): bigint {
+  let hash = 0n;
+  if (castling.whiteKingside) {
+    hash ^= TABLE.castling.whiteKingside;
+  }
+  if (castling.whiteQueenside) {
+    hash ^= TABLE.castling.whiteQueenside;
+  }
+  if (castling.blackKingside) {
+    hash ^= TABLE.castling.blackKingside;
+  }
+  if (castling.blackQueenside) {
+    hash ^= TABLE.castling.blackQueenside;
+  }
+  return hash;
+}
+
+/**
+ * The en-passant contribution of a file, used only when that file's ep
+ * square is meaningful (see `meaningfulEnPassant`).
+ */
+export function epFileZobrist(file: number): bigint {
+  return TABLE.epFile[file];
 }

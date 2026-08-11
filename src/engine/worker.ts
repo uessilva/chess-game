@@ -1,9 +1,10 @@
 import { parseFen } from '../core';
 import type { PieceType } from '../core';
 import { searchWithTime } from './iterativeDeepening';
+import { TranspositionTable } from './transpositionTable';
 
 /**
- * Web Worker protocol shell (task 3.2, extended by 3.4): a thin,
+ * Web Worker protocol shell (task 3.2, extended by 3.4/3.5): a thin,
  * serializable boundary around the pure search. FEN is the wire contract —
  * matching core's plain-data, side-effect-free principle — so the worker
  * parses the position itself and the main thread never sends a live
@@ -18,6 +19,14 @@ import { searchWithTime } from './iterativeDeepening';
  * the full task-3.4 result: move, score, the deepest completed depth, the
  * node count, and the elapsed time.
  *
+ * The worker owns one transposition table (task 3.5) that persists across
+ * requests: positions re-searched in later requests (transpositions,
+ * repeated lines) are hit from the cache, and the stored best moves feed
+ * ordering. Entries are keyed by the full 64-bit Zobrist hash and
+ * full-key verified on probe, so reuse is always correct — the TT only
+ * ever changes how fast a search finishes, never the move or score it
+ * reports.
+ *
  * The handler is exported as a pure function (`handleSearchRequest`) so
  * tests drive it directly in Node; the top-level wiring below attaches it
  * to the dedicated-worker scope only when one exists. The receiver (the
@@ -25,6 +34,9 @@ import { searchWithTime } from './iterativeDeepening';
  * the request they answer, and the UI drops any reply whose requestId does
  * not match its latest request.
  */
+
+/** The worker's transposition table, shared across search requests. */
+const transpositionTable = new TranspositionTable();
 
 export interface SearchRequestMessage {
   readonly type: 'search';
@@ -70,6 +82,7 @@ export function handleSearchRequest(
   const result = searchWithTime(state, {
     timeMs: message.timeMs,
     maxDepth: message.depth,
+    tt: transpositionTable,
   });
   post({
     type: 'search-result',

@@ -191,8 +191,10 @@ export function parseFen(fen: string): BoardState {
     fullmoveNumber: parseCounter(fields[5], 'fullmove number', 1),
     history: [],
     positionHashes: [],
+    zobristKey: 0n,
   };
-  state.positionHashes.push(zobristHash(state));
+  state.zobristKey = zobristHash(state);
+  state.positionHashes.push(state.zobristKey);
   return state;
 }
 
