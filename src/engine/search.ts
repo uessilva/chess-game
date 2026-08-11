@@ -4,6 +4,7 @@ import type { Move } from '../core/types';
 import { MoveFlags } from '../core/types';
 import { evaluate as defaultEvaluate } from './eval';
 import { MoveOrdering } from './moveOrdering';
+import { quiescenceSearch } from './quiescence';
 import type { Bound, TranspositionTable, TTMove } from './transpositionTable';
 
 /**
@@ -177,6 +178,18 @@ export interface SearchOptions {
    * unaffected. A fresh generation is ticked at the start of the search.
    */
   readonly tt?: TranspositionTable | null;
+  /**
+   * Task 3.6 (#21): when true, the depth-0 horizon is extended by the
+   * quiescence search instead of returning the raw static evaluation —
+   * captures and promotions are searched past the horizon until the
+   * position is quiet (see quiescence.ts), resolving the horizon effect.
+   * `shouldAbort` and `tt` are passed through, so the deadline is honored
+   * inside qsearch and qsearch nodes share the transposition table.
+   * Default false, so the default search is byte-for-byte the pre-qsearch
+   * search (same moves, scores, and node counts) — the same strict opt-in
+   * policy as the TT.
+   */
+  readonly qsearch?: boolean;
 }
 
 /**
@@ -282,6 +295,7 @@ function negamax(
   ordering: MoveOrdering,
   shouldAbort: (() => boolean) | undefined,
   tt: TranspositionTable | null,
+  qsearchEnabled: boolean,
 ): number {
   ordering.nodes++;
   // Cooperative deadline: the iterative-deepening wrapper abandons an
@@ -318,8 +332,24 @@ function negamax(
     best = isInCheck(state, state.turn) ? -(MATE_SCORE - ply) : 0;
     bound = 'exact';
   } else if (depth === 0) {
-    // The static evaluation IS the exact depth-0 value.
-    best = evaluate(state);
+    // The static evaluation IS the exact depth-0 value — unless task 3.6's
+    // qsearch is enabled, in which case the horizon is extended: captures
+    // and promotions are searched past the horizon until the position is
+    // quiet (see quiescence.ts). The qsearch nodes are counted into the
+    // search-wide node counter, and its base ply is this node's ply so
+    // mate scores stay measured from the root.
+    if (qsearchEnabled) {
+      const q = quiescenceSearch(state, alpha, beta, {
+        ply,
+        evaluate,
+        shouldAbort,
+        tt,
+      });
+      ordering.nodes += q.nodes;
+      best = q.score;
+    } else {
+      best = evaluate(state);
+    }
     bound = 'exact';
   } else {
     let searched = ordered ? ordering.orderMoves(state, moves, ply) : moves;
@@ -350,6 +380,7 @@ function negamax(
         ordering,
         shouldAbort,
         tt,
+        qsearchEnabled,
       );
       unmakeMove(state);
       if (score > best) {
@@ -408,6 +439,7 @@ export function search(
   const ordered = options.ordered ?? true;
   const shouldAbort = options.shouldAbort;
   const tt = options.tt ?? null;
+  const qsearchEnabled = options.qsearch ?? false;
   if (tt !== null) {
     // Entries stored by earlier searches stay probeable, but get replaced
     // first on collision (see transpositionTable.ts replacement policy).
@@ -463,6 +495,7 @@ export function search(
         ordering,
         shouldAbort,
         tt,
+        qsearchEnabled,
       );
       unmakeMove(state);
       if (score > bestScore) {

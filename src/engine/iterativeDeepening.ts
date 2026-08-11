@@ -57,6 +57,14 @@ export interface TimeSearchOptions {
    * TT, preserving the pre-TT behavior exactly.
    */
   readonly tt?: TranspositionTable | null;
+  /**
+   * Task 3.6 (#21): when true, every fixed-depth iteration extends its
+   * horizon with the quiescence search instead of the raw static
+   * evaluation (see SearchOptions.qsearch). The stop flag is passed into
+   * qsearch, so an expiring budget also truncates an in-flight capture
+   * chain. Defaults to false, preserving the pre-qsearch behavior exactly.
+   */
+  readonly qsearch?: boolean;
 }
 
 /** What the time-budgeted search returns. */
@@ -154,6 +162,7 @@ export function searchWithTime(
         pvMove,
         shouldAbort,
         tt: options.tt ?? null,
+        qsearch: options.qsearch,
       });
     } catch (error) {
       if (error instanceof SearchTimeoutError) {
