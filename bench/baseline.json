@@ -1,0 +1,36 @@
+{
+  "meta": {
+    "node": "v24.19.0",
+    "platform": "linux",
+    "cpu": "Intel(R) Core(TM) i5-10300H CPU @ 2.50GHz",
+    "generatedAt": "2026-08-12T03:04:48.551Z"
+  },
+  "config": {
+    "iterations": 5,
+    "ordered": true,
+    "transpositionTable": true,
+    "qsearch": false
+  },
+  "positions": {
+    "startpos": {
+      "depth": 5,
+      "nodes": 39714,
+      "nodesPerSec": 18677.583105263824
+    },
+    "kiwipete": {
+      "depth": 4,
+      "nodes": 87711,
+      "nodesPerSec": 14005.619313595964
+    },
+    "promotion": {
+      "depth": 5,
+      "nodes": 142946,
+      "nodesPerSec": 14523.670661038852
+    },
+    "endgame": {
+      "depth": 6,
+      "nodes": 64664,
+      "nodesPerSec": 34408.39598917211
+    }
+  }
+}
