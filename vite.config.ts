@@ -13,6 +13,12 @@ export default defineConfig({
       '**/.{idea,git,cache,output,temp}/**',
       '**/{karma,rollup,webpack,vite}.config.*',
       'tests/visual/**',
+      // The nodes/sec bench and the Stockfish sparring match are opt-in
+      // harnesses (task 3.7): they measure wall time / play minutes-long
+      // matches, so they run only via their own vitest configs
+      // (vitest.bench.config.ts / vitest.sparring.config.ts), never under
+      // npm test, npm run check, or CI.
+      'bench/**',
     ],
     coverage: {
       provider: 'v8',
