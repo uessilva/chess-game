@@ -25,7 +25,7 @@
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run check:modules && npm test && npm run test:coverage"
   },
   "devDependencies": {
-    "@commitlint/cli": "^21.2.1",
+    "@commitlint/cli": "^21.2.2",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.62.1",
     "@vitest/coverage-v8": "^4.1.10",
