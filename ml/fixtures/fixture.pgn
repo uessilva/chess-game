@@ -1,0 +1,32 @@
+[Event "Fixture: Opera game"]
+[Site "Paris FRA"]
+[Date "1858.11.02"]
+[Round "1"]
+[White "Morphy, Paul"]
+[Black "Duke Karl / Count Isouard"]
+[Result "1-0"]
+[TimeControl "600+0"]
+
+1. e4 e5 2. Nf3 d6 3. d4 Bg4 4. dxe5 Bxf3 5. Qxf3 dxe5 6. Bc4 Nf6 7. Qb3 Qe7 8. Nc3 c6 9. Bg5 b5 10. Nxb5 cxb5 11. Bxb5+ Nbd7 12. O-O-O Rd8 13. Rxd7 Rxd7 14. Rd1 Qe6 15. Bxd7+ Nxd7 16. Qb8+ Nxb8 17. Rd8# 1-0
+
+[Event "Fixture: en passant"]
+[Site "?"]
+[Date "2025.11.02"]
+[Round "2"]
+[White "Fixture"]
+[Black "Fixture"]
+[Result "1/2-1/2"]
+[TimeControl "180+2"]
+
+1. e4 d5 2. e5 f5 3. exf6 Nxf6 4. d4 e6 5. Nf3 Bd6 6. Bd3 O-O 7. O-O c5 8. c3 Nc6 9. Bg5 cxd4 10. cxd4 Be7 11. Nbd2 Qd7 12. Re1 Re8 13. Rc1 h6 14. Bh4 a6 15. Ne5 Qd8 16. Nxc6 bxc6 17. Bg3 1/2-1/2
+
+[Event "Fixture: promotion"]
+[Site "?"]
+[Date "2025.11.03"]
+[Round "3"]
+[White "Fixture"]
+[Black "Fixture"]
+[Result "0-1"]
+[TimeControl "300+0"]
+
+1. h3 b5 2. Nc3 f6 3. Na4 h5 4. g4 f5 5. c4 bxa4 6. Rb1 Nf6 7. b3 Rg8 8. c5 g6 9. f4 d5 10. Rh2 e6 11. c6 Nbd7 12. Ba3 Nh7 13. Bc5 Ne5 14. Be7 Rg7 15. Bxd8 Be7 16. Ra1 Bxd8 17. fxe5 h4 18. Rg2 Rd7 19. Qb1 Re7 20. g5 a5 21. Qxf5 Rd7 22. Qe4 a3 23. Qc4 Rg7 24. Qb4 Kf7 25. Rc1 a4 26. Qc5 Ba6 27. Rh2 Rc8 28. Kf2 axb3 29. Rd1 bxa2 30. Qc3 a1=B 0-1

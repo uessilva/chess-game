@@ -36,6 +36,26 @@ jobs:
         if: github.event_name == 'pull_request'
         run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }}
 
+  # Python sidecar (task 4.1): the pipeline's own gate. The test suite runs
+  # the real builder on a 3-game fixture and cross-checks its FEN oracle in
+  # the quality job's vitest run. Torch is deliberately not installed here
+  # (its smoke test importorskips); only 4.2 needs it.
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ml
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --no-group train
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync ruff format --check .
+      - run: uv run --no-sync mypy
+      - run: uv run --no-sync pytest
+
   # Visual regression (task 2.6): committed Playwright baselines compared
   # against the production build. Own job so the browser install doesn't slow
   # the main gate; failure artifacts (screenshots + pixel diffs) are

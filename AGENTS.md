@@ -19,6 +19,9 @@ pick and ship issues — lives in `_docs/` (start with `_docs/PROCESS.md`).
 - **Stack:** TypeScript (Web)
 - **AI track:** classical search AI first (minimax/alpha-beta), then ML
   (neural evaluation, AlphaZero-style self-play)
+- **ML sidecar:** Python 3.12 managed by `uv` in `ml/` (python-chess, numpy;
+  torch pinned to the CPU wheel for 4.2+). `python-chess` is GPL-3.0, so
+  `ml/` is effectively GPL-3.0 if distributed.
 
 ## Architecture (the rules that matter)
 
@@ -27,7 +30,8 @@ src/
   core/     → board state, move gen, rules (pure TS, NO DOM, no I/O)
   ui/       → rendering, input, animation (depends on core only)
   engine/   → classical AI (depends on core only, runs in a Web Worker)
-  ml/       → later: Python training sidecar + ONNX inference in browser
+  ml/       → later: ONNX inference in the browser (depends on core only)
+ml/         → Python training sidecar and data pipeline (uv project)
 ```
 
 - `core/` must stay framework-agnostic and side-effect free. It will later be
@@ -60,6 +64,9 @@ by the orchestrator and are blocked until the required checks pass.
   benchmark; Kiwipete & other standard positions as regression fixtures.
 - **Module boundaries:** dependency-cruiser enforces `core/` purity (no
   imports from `ui/`/`engine/`, no DOM).
+- **Python sidecar:** its own CI job runs `uv sync --frozen --no-group train`,
+  `ruff check`, `ruff format --check`, `mypy`, and `pytest` (no torch, no
+  network). `npm run check:ml` mirrors it locally.
 - **Commits:** commitlint enforces the prefix convention (CI check, no local
   hooks).
 - **Dependencies:** Dependabot for npm + GitHub Actions.
@@ -91,15 +98,19 @@ by the orchestrator and are blocked until the required checks pass.
 
 ## Commands
 
-Requires Node.js ≥ 20 (run `nvm use` — `.nvmrc` is set; the machine default is old).
+Requires Node.js ≥ 20 (run `nvm use` — `.nvmrc` is set; the machine default is old)
+and [uv](https://docs.astral.sh/uv/) for the Python ML sidecar.
 
 - `npm run dev` — Vite dev server
 - `npm run build` — production build
 - `npm test` / `npm run test:watch` — Vitest
 - `npm run test:coverage` — tests with coverage thresholds enforced
 - `npm run typecheck` / `npm run lint` / `npm run format` (`format:check`)
+- `npm run check:ml` — Python gate (ruff, mypy, pytest) in `ml/`; run
+  `cd ml && uv sync` once first
 - `npm run check` — full local gate: typecheck + lint + format check + module
-  boundaries (`depcruise`) + coverage. Mirrors CI; run it before opening a PR.
+  boundaries (`depcruise`) + coverage + the Python sidecar. Mirrors CI; run it
+  before opening a PR.
 
 ## Working with the Owner
 
