@@ -25,11 +25,10 @@ Orchestrator files issue  →  PM grooms   →  Engineer builds & opens PR  → 
 (from intake)                (spec + tests)   (code + tests, Closes #N)     (runs all tests, CI)     (user POV)
 ```
 
-1. Orchestrator (the top-level session, `build` agent, or the `/execute`
-   command) files the raw issue on behalf of the owner. Intake arrives as
-   conversational input — bug reports, feature requests, ideas — and is turned
-   into a GitHub issue. The orchestrator does NOT groom inline — grooming is
-   the PM's job.
+1. Orchestrator (the top-level session) files the raw issue on behalf of the
+   owner. Intake arrives as conversational input — bug reports, feature
+   requests, ideas — and is turned into a GitHub issue. The orchestrator does
+   NOT groom inline — grooming is the PM's job.
 2. Product Manager reads the raw request, researches the codebase, and rewrites
    the issue with: scope, acceptance criteria, dependencies, and test
    scenarios (perft fixtures for core work, Given/When/Then for behavior).
@@ -51,21 +50,20 @@ Orchestrator files issue  →  PM grooms   →  Engineer builds & opens PR  → 
 
 ## Agents
 
-| Agent             | File                                    | Role                                                                          |
-| ----------------- | --------------------------------------- | ----------------------------------------------------------------------------- |
-| Product Manager   | `.opencode/agents/product-manager.md`   | Grooms issues into specs (start) + user acceptance review (end)               |
-| Designer          | `.opencode/agents/designer.md`          | Audits board/UI surfaces; produces screenshot-backed findings only (Phase 2+) |
-| Software Engineer | `.opencode/agents/software-engineer.md` | Implements code + tests, opens the PR, iterates on review feedback            |
-| Tester            | `.opencode/agents/tester.md`            | Tests the PR: runs all tests, verifies acceptance criteria + CI               |
+| Agent             | Role                                                                          |
+| ----------------- | ----------------------------------------------------------------------------- |
+| Product Manager   | Grooms issues into specs (start) + user acceptance review (end)               |
+| Designer          | Audits board/UI surfaces; produces screenshot-backed findings only (Phase 2+) |
+| Software Engineer | Implements code + tests, opens the PR, iterates on review feedback            |
+| Tester            | Tests the PR: runs all tests, verifies acceptance criteria + CI               |
 
 ## Agent Workflow
 
-An orchestrator (top-level session with the human as supervisor, or the
-`/execute` command) drives the process. The orchestrator is the manager: it
-files raw issues from intake, dispatches role agents, relays handoffs, merges
-accepted PRs, and picks the next backlog issue after a merge. The orchestrator
-does not personally groom, implement, test, or accept — those are role-agent
-jobs.
+An orchestrator (top-level session with the human as supervisor) drives the
+process. The orchestrator is the manager: it files raw issues from intake,
+dispatches role agents, relays handoffs, merges accepted PRs, and picks the next
+backlog issue after a merge. The orchestrator does not personally groom,
+implement, test, or accept — those are role-agent jobs.
 
 ```
 User intake (chat / link / bug report / feature idea)
@@ -157,8 +155,8 @@ check` locally, commits the issue's files on a task branch (`<prefix>:
   acceptance → merge → next issue. The only parallel step is PM grooming when a
   batch is requested — groom multiple ungroomed issues concurrently, but run
   only one implementation/QA/acceptance track at a time.
-- Role agents use their configured model (opencode-go/kimi-k3). No model
-  overrides needed — opencode subagents inherit their file settings.
+- Role agents are dispatched as subagents; the orchestrator chooses their model
+  at dispatch time. The repo does not pin per-agent models.
 - Keep role agents running whenever eligible backlog exists. If there is a
   groomed, unblocked issue and agent capacity is available, launch the next
   appropriate role agent instead of leaving the pipeline idle. Only pause when
