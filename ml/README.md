@@ -107,7 +107,9 @@ committed dev defaults (`--max-games 20000 --ply-cap 80 --min-plies 20`,
 | Speed                     | blitz 18,572 / rapid 1,320 / classical 108                          |
 | Most common time controls | 180+0: 13,097 · 180+2: 4,358 · 600+0: 522 · 180+1: 376 · 300+0: 246 |
 | Skipped                   | too short 137 · unfinished 0 · illegal 0                            |
-| Throughput                | 14,652 positions/s (94.8 s, 8 jobs)                                 |
-| Manifest sha256           | `4f410de20e84726e8f87626747b36ad713620f39faf8bad7040a27820f603687`  |
+| Throughput                | 14,843 positions/s (93.6 s, 8 jobs)                                 |
+| Manifest sha256           | `b02afdd0b34414c47fd51b2f922257438fd49786fb7565598bbf28353f5b7949`  |
 
 A full-month run is `uv run ml-build --month 2025-11 --max-games 0 --jobs 8`.
+The manifest records `tool.git_commit` = `ef48e02` (the pipeline commit), so
+rebuilding that commit with the same source and limits reproduces the hash.
