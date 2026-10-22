@@ -114,3 +114,17 @@ Requires Node.js ≥ 20 (run `nvm use` — `.nvmrc` is set; the machine default 
 
 If you change the structure, stack, conventions, or workflow, update this file.
 Task status is tracked on the project board — do not duplicate it here.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `uessilva/chess-game`, driven by the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage role names, unchanged: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
