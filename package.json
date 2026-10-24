@@ -22,7 +22,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:modules": "depcruise src",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run check:modules && npm test && npm run test:coverage"
+    "check:ml": "cd ml && uv run --no-sync ruff check . && uv run --no-sync ruff format --check . && uv run --no-sync mypy && uv run --no-sync pytest",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run check:modules && npm test && npm run test:coverage && npm run check:ml"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.2.1",

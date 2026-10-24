@@ -16,6 +16,14 @@ export default {
       from: { path: '^src/engine' },
       to: { pathNot: '^src/(core|engine)|^node_modules' },
     },
+    {
+      name: 'ml-inference-depends-on-core-only',
+      comment:
+        'src/ml (browser inference, 4.3) may only depend on src/core, itself, npm packages, and node built-ins used by tests',
+      severity: 'error',
+      from: { path: '^src/ml', pathNot: '\\.test\\.ts$' },
+      to: { pathNot: '^src/(core|ml)|^node_modules' },
+    },
   ],
   options: {
     tsConfig: { fileName: 'tsconfig.json' },

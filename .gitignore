@@ -4,3 +4,13 @@ coverage
 test-results
 playwright-report
 *.local
+
+# Python / ML sidecar
+ml/.venv/
+ml/data/*
+!ml/data/manifests/
+!ml/data/manifests/**
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

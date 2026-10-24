@@ -1,0 +1,9 @@
+{
+  "build_seconds": 93.591,
+  "built_at": "2026-10-22T19:37:39+00:00",
+  "dataset_id": "elite-2025-11-dev-v1",
+  "jobs": 8,
+  "manifest_sha256": "b02afdd0b34414c47fd51b2f922257438fd49786fb7565598bbf28353f5b7949",
+  "positions_per_second": 14842.8,
+  "shard_size": 1000000
+}
